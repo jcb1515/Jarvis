@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from dataclasses import replace
+from typing import Any, Iterable, List
 
 from openjarvis.core.types import ToolResult
 from openjarvis.mcp.client import MCPClient
@@ -24,6 +25,7 @@ class MCPToolAdapter(BaseTool):
     """
 
     tool_id = "mcp_adapter"
+    is_local = False
 
     def __init__(self, client: MCPClient, tool_spec: ToolSpec) -> None:
         self._client = client
@@ -63,13 +65,52 @@ class MCPToolProvider:
         The ``MCPClient`` connected to the MCP server.
     """
 
-    def __init__(self, client: MCPClient) -> None:
+    def __init__(
+        self,
+        client: MCPClient,
+        server_name: str = "mcp",
+        read_only_tools: Iterable[str] = (),
+        write_tools: Iterable[str] = (),
+        default_mode: str = "confirm",
+    ) -> None:
         self._client = client
+        self._server_name = server_name
+        self._read_only_tools = tuple(read_only_tools)
+        self._write_tools = tuple(write_tools)
+        self._default_mode = default_mode
 
     def discover(self) -> List[BaseTool]:
         """Discover available tools and return them as BaseTool adapters."""
+        from openjarvis.mcp.safety import requires_confirmation
+
         specs = self._client.list_tools()
-        return [MCPToolAdapter(self._client, s) for s in specs]
+        safe_specs = [
+            replace(
+                spec,
+                requires_confirmation=requires_confirmation(
+                    spec.name,
+                    self._read_only_tools,
+                    self._write_tools,
+                    self._default_mode,
+                ),
+                metadata={
+                    **spec.metadata,
+                    "mcp_server": self._server_name,
+                    "access": (
+                        "write"
+                        if requires_confirmation(
+                            spec.name,
+                            self._read_only_tools,
+                            self._write_tools,
+                            self._default_mode,
+                        )
+                        else "read"
+                    ),
+                },
+            )
+            for spec in specs
+        ]
+        return [MCPToolAdapter(self._client, spec) for spec in safe_specs]
 
 
 __all__ = ["MCPToolAdapter", "MCPToolProvider"]

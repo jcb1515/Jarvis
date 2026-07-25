@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re as _re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -169,7 +170,15 @@ def _parse_param_count(model_name: str) -> float:
     return float(m.group(1)) if m else 0.0
 
 
-_CLOUD_PREFIXES = ("gpt-", "claude-", "gemini-", "o1-", "o3-", "o4-")
+_CLOUD_PREFIXES = (
+    "gpt-",
+    "claude-",
+    "gemini-",
+    "o1-",
+    "o3-",
+    "o4-",
+    "nvidia/",
+)
 
 
 def _pick_recommended_model(
@@ -262,8 +271,6 @@ def _ensure_registries_populated() -> None:
 
 def build_tools_list() -> List[Dict[str, Any]]:
     """Build unified tools list from ToolRegistry + ChannelRegistry."""
-    import os
-
     from openjarvis.core.credentials import TOOL_CREDENTIALS
     from openjarvis.core.registry import ChannelRegistry, ToolRegistry
 
@@ -697,17 +704,38 @@ def _get_mcp_tools(app_state: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     for server_cfg in server_list:
         cfg = _json.loads(server_cfg) if isinstance(server_cfg, str) else server_cfg
         name = cfg.get("name", "<unnamed>")
-        url = cfg.get("url")
+        if cfg.get("enabled", True) is False:
+            logger.info("MCP server '%s' is disabled in config", name)
+            continue
+        raw_url = cfg.get("url")
+        url = os.path.expandvars(str(raw_url)) if raw_url else None
         # Bearer token from config — mirrors the builder.py fix for #461.
-        token = cfg.get("token")
+        raw_token = cfg.get("token")
+        token = os.path.expandvars(str(raw_token)) if raw_token else None
+        verify_tls = cfg.get("verify_tls", True)
+        if not isinstance(verify_tls, bool):
+            raise TypeError(
+                f"MCP server {name!r} verify_tls must be a boolean"
+            )
         command = cfg.get("command", "")
         args = cfg.get("args", [])
+        process_env = {
+            str(key): os.path.expandvars(str(value))
+            for key, value in cfg.get("env", {}).items()
+        }
 
         try:
             if url:
-                transport = StreamableHTTPTransport(url=url, token=token)
+                transport = StreamableHTTPTransport(
+                    url=url,
+                    token=token,
+                    verify_tls=verify_tls,
+                )
             elif command:
-                transport = StdioTransport(command=[command] + args)
+                transport = StdioTransport(
+                    command=[command] + args,
+                    env=process_env,
+                )
             else:
                 logger.warning(
                     "MCP server '%s' has neither 'url' nor 'command' — skipping",
@@ -719,7 +747,13 @@ def _get_mcp_tools(app_state: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
             client.initialize()
             mcp_clients.append(client)
 
-            provider = MCPToolProvider(client)
+            provider = MCPToolProvider(
+                client,
+                server_name=name,
+                read_only_tools=cfg.get("read_only_tools", []),
+                write_tools=cfg.get("write_tools", []),
+                default_mode=cfg.get("default_mode", "confirm"),
+            )
             discovered = provider.discover()
 
             # Per-server tool filtering

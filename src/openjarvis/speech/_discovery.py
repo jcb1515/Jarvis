@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 # Priority order: local first, then cloud
 DISCOVERY_ORDER = [
+    "whisper",
     "faster-whisper",
     "openai",
     "deepgram",
@@ -30,7 +31,12 @@ def _create_backend(
     try:
         backend_cls = SpeechRegistry.get(key)
 
-        if key == "faster-whisper":
+        if key == "whisper":
+            return backend_cls(
+                model_size=config.speech.model,
+                device=config.speech.device,
+            )
+        elif key == "faster-whisper":
             return backend_cls(
                 model_size=config.speech.model,
                 device=config.speech.device,

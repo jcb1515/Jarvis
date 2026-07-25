@@ -216,7 +216,16 @@ export async function deleteModel(modelName: string): Promise<void> {
   }
 }
 
-const _CLOUD_PREFIXES = ['gpt-', 'o1-', 'o3-', 'o4-', 'claude-', 'gemini-', 'openrouter/'];
+const _CLOUD_PREFIXES = [
+  'gpt-',
+  'o1-',
+  'o3-',
+  'o4-',
+  'claude-',
+  'gemini-',
+  'openrouter/',
+  'nvidia/',
+];
 
 export async function preloadModel(modelName: string): Promise<void> {
   // Cloud models don't need Ollama preloading
@@ -324,6 +333,8 @@ export interface TranscriptionResult {
   language: string | null;
   confidence: number | null;
   duration_seconds: number;
+  speech_active?: boolean | null;
+  trailing_silence_seconds?: number | null;
 }
 
 export interface SpeechHealth {
@@ -375,6 +386,140 @@ export async function fetchSpeechHealth(): Promise<SpeechHealth> {
   const res = await apiFetch(`/v1/speech/health`);
   if (!res.ok) return { available: false };
   return res.json();
+}
+
+export interface TranscriptionStream {
+  close: () => void;
+  send: (audio: Blob) => void;
+}
+
+const getWebSocketBase = (): URL => {
+  const httpBase = getBase() || window.location.origin;
+  const url = new URL('/v1/speech/stream', httpBase);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  const key = getApiKey();
+  if (key) url.searchParams.set('token', key);
+  return url;
+};
+
+export async function createTranscriptionStream(
+  onPartial: (result: TranscriptionResult) => void,
+  onError: (error: Error) => void,
+): Promise<TranscriptionStream> {
+  const socket = new WebSocket(getWebSocketBase());
+  socket.binaryType = 'arraybuffer';
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener(
+      'error',
+      () => reject(new Error('Could not open the local Whisper stream.')),
+      { once: true },
+    );
+  });
+  socket.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(String(event.data)) as {
+        type: string;
+        detail?: string;
+        result?: TranscriptionResult;
+      };
+      if (payload.type === 'partial' && payload.result) {
+        onPartial(payload.result);
+      } else if (payload.type === 'error') {
+        onError(
+          new Error(payload.detail || 'The local Whisper stream failed.'),
+        );
+      }
+    } catch (caught) {
+      onError(
+        caught instanceof Error
+          ? caught
+          : new Error('The Whisper stream returned invalid data.'),
+      );
+    }
+  });
+  socket.addEventListener('error', () => {
+    onError(new Error('The local Whisper WebSocket disconnected.'));
+  });
+  return {
+    close: () => socket.close(1000, 'recording-complete'),
+    send: (audio: Blob) => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        throw new Error('The local Whisper stream is not open.');
+      }
+      socket.send(audio);
+    },
+  };
+}
+
+export interface SpeechSynthesisResult {
+  audio: Blob;
+  backend: string;
+  voice: string;
+}
+
+export interface SpeechSynthesisStream {
+  response: Response;
+  backend: string;
+  voice: string;
+  streaming: boolean;
+}
+
+export async function openSpeechStream(
+  text: string,
+  voice: string,
+  speed: number,
+): Promise<SpeechSynthesisStream> {
+  const res = await apiFetch('/v1/speech/synthesize/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      backend: 'auto',
+      voice_id: voice,
+      speed,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(
+      `Streaming speech synthesis failed: status=${res.status}, response=${detail}`,
+    );
+  }
+  return {
+    response: res,
+    backend: res.headers.get('X-Jarvis-TTS-Backend') || 'unknown',
+    voice: res.headers.get('X-Jarvis-TTS-Voice') || voice || 'auto',
+    streaming: res.headers.get('X-Jarvis-TTS-Streaming') === 'true',
+  };
+}
+
+export async function synthesizeSpeech(
+  text: string,
+  voice: string,
+  speed: number,
+): Promise<SpeechSynthesisResult> {
+  const res = await apiFetch('/v1/speech/synthesize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      backend: 'auto',
+      voice_id: voice,
+      speed,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(
+      `Speech synthesis failed: status=${res.status}, response=${detail}`,
+    );
+  }
+  return {
+    audio: await res.blob(),
+    backend: res.headers.get('X-Jarvis-TTS-Backend') || 'unknown',
+    voice: res.headers.get('X-Jarvis-TTS-Voice') || voice || 'auto',
+  };
 }
 
 // ---------------------------------------------------------------------------

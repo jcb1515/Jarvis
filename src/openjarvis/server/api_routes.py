@@ -8,7 +8,15 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -56,6 +64,13 @@ class OptimizeRunRequest(BaseModel):
     max_trials: int = 20
     optimizer_model: str = "claude-sonnet-4-6"
     max_samples: int = 50
+
+
+class SpeechSynthesisRequest(BaseModel):
+    text: str
+    backend: str = "auto"
+    voice_id: str = ""
+    speed: float = 1.0
 
 
 # ---- Agent routes ----
@@ -944,6 +959,202 @@ async def speech_health(request: Request):
         "backend": backend.backend_id,
         **({"reason": reason} if reason else {}),
     }
+
+
+@speech_router.websocket("/stream")
+async def stream_speech_transcription(websocket: WebSocket) -> None:
+    """Stream partial local Whisper transcripts over one session WebSocket."""
+    from openjarvis.server.auth_middleware import websocket_authorized
+
+    expected_key = getattr(websocket.app.state, "api_key", "")
+    if not websocket_authorized(websocket, expected_key):
+        await websocket.close(code=1008)
+        return
+
+    backend = getattr(websocket.app.state, "speech_backend", None)
+    if backend is None:
+        await websocket.close(code=1011, reason="No speech backend configured")
+        return
+
+    await websocket.accept()
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            audio = message.get("bytes")
+            if not audio:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": "Expected a non-empty binary audio chunk",
+                    }
+                )
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    backend.transcribe,
+                    audio,
+                    format="webm",
+                )
+                config = getattr(websocket.app.state, "config", None)
+                activity = None
+                if config is not None and config.speech.vad_enabled:
+                    from openjarvis.speech.silero_vad import SileroVADDetector
+
+                    detector = getattr(websocket.app.state, "silero_vad", None)
+                    if detector is None:
+                        detector = SileroVADDetector(
+                            threshold=config.speech.vad_threshold,
+                            min_silence_ms=config.speech.vad_min_silence_ms,
+                        )
+                        websocket.app.state.silero_vad = detector
+                    activity = await asyncio.to_thread(
+                        detector.detect,
+                        audio,
+                        "webm",
+                    )
+                await websocket.send_json(
+                    {
+                        "type": "partial",
+                        "result": {
+                            "text": result.text,
+                            "language": result.language,
+                            "confidence": result.confidence,
+                            "duration_seconds": result.duration_seconds,
+                            "speech_active": (
+                                activity.active if activity is not None else None
+                            ),
+                            "trailing_silence_seconds": (
+                                activity.trailing_silence_seconds
+                                if activity is not None
+                                else None
+                            ),
+                        },
+                    }
+                )
+            except Exception as exc:
+                logger.exception("Streaming speech transcription failed")
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": (
+                            "Streaming Whisper transcription failed: "
+                            f"backend={backend.backend_id!r}, error={exc}"
+                        ),
+                    }
+                )
+    except WebSocketDisconnect:
+        return
+
+
+@speech_router.post("/synthesize")
+async def synthesize_speech(
+    payload: SpeechSynthesisRequest,
+    request: Request,
+) -> Response:
+    """Synthesize spoken JARVIS output with ElevenLabs and Kokoro fallback."""
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="Speech text cannot be empty")
+    if payload.speed < 0.5 or payload.speed > 2.0:
+        raise HTTPException(
+            status_code=400,
+            detail="Speech speed must be between 0.5 and 2.0",
+        )
+
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        raise HTTPException(status_code=501, detail="Speech config is unavailable")
+
+    try:
+        from openjarvis.speech._tts_discovery import synthesize_with_fallback
+
+        backend_key, result = await asyncio.to_thread(
+            synthesize_with_fallback,
+            config,
+            text=payload.text.strip(),
+            requested_backend=payload.backend,
+            voice_id=payload.voice_id,
+            speed=payload.speed,
+        )
+    except Exception as exc:
+        logger.exception("Speech synthesis failed")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Speech synthesis failed: "
+                f"backend={payload.backend!r}, voice_id={payload.voice_id!r}, "
+                f"error={exc}"
+            ),
+        ) from exc
+
+    media_types = {
+        "mp3": "audio/mpeg",
+        "wav": "audio/wav",
+        "ogg": "audio/ogg",
+    }
+    return Response(
+        content=result.audio,
+        media_type=media_types.get(result.format, "application/octet-stream"),
+        headers={
+            "X-Jarvis-TTS-Backend": backend_key,
+            "X-Jarvis-TTS-Voice": result.voice_id,
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@speech_router.post("/synthesize/stream")
+async def stream_synthesized_speech(
+    payload: SpeechSynthesisRequest,
+    request: Request,
+) -> StreamingResponse:
+    """Stream ElevenLabs audio immediately, with one-chunk local fallback."""
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="Speech text cannot be empty")
+    if payload.speed < 0.5 or payload.speed > 2.0:
+        raise HTTPException(
+            status_code=400,
+            detail="Speech speed must be between 0.5 and 2.0",
+        )
+
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        raise HTTPException(status_code=501, detail="Speech config is unavailable")
+
+    try:
+        from openjarvis.speech._tts_discovery import stream_with_fallback
+
+        backend_key, audio_format, voice_id, chunks = await asyncio.to_thread(
+            stream_with_fallback,
+            config,
+            text=payload.text.strip(),
+            requested_backend=payload.backend,
+            voice_id=payload.voice_id,
+            speed=payload.speed,
+        )
+    except Exception as exc:
+        logger.exception("Streaming speech synthesis failed")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Streaming speech synthesis failed: "
+                f"backend={payload.backend!r}, voice_id={payload.voice_id!r}, "
+                f"error={exc}"
+            ),
+        ) from exc
+
+    media_types = {"mp3": "audio/mpeg", "wav": "audio/wav"}
+    return StreamingResponse(
+        chunks,
+        media_type=media_types.get(audio_format, "application/octet-stream"),
+        headers={
+            "X-Jarvis-TTS-Backend": backend_key,
+            "X-Jarvis-TTS-Voice": voice_id,
+            "X-Jarvis-TTS-Streaming": str(backend_key == "elevenlabs").lower(),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ---- Feedback routes ----

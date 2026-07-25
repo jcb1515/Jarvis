@@ -1442,11 +1442,18 @@ class OperatorsConfig:
 class SpeechConfig:
     """Speech-to-text settings."""
 
-    backend: str = "auto"  # "auto", "faster-whisper", "openai", "deepgram"
-    model: str = "base"  # Whisper model size: tiny, base, small, medium, large-v3
+    backend: str = "whisper"  # "whisper", "faster-whisper", "openai", "deepgram"
+    model: str = "base"  # OpenAI Whisper: tiny, base, small, medium, large, turbo
     language: str = ""  # Empty = auto-detect
     device: str = "auto"  # "auto", "cpu", "cuda"
     compute_type: str = "float16"  # "float16", "int8", "float32"
+    tts_backend: str = "auto"  # "auto", "elevenlabs", "kokoro"
+    tts_voice: str = ""
+    tts_speed: float = 1.0
+    auto_speak: bool = True
+    vad_enabled: bool = True
+    vad_threshold: float = 0.5
+    vad_min_silence_ms: int = 700
 
 
 @dataclass(slots=True)

@@ -8,6 +8,7 @@ httpx directly so no cloud SDK packages are required.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from typing import Any, Sequence
@@ -16,6 +17,8 @@ import httpx
 
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Key / provider detection
@@ -27,6 +30,7 @@ _OPENAI_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
 _ANTHROPIC_PREFIXES = ("claude-",)
 _GOOGLE_PREFIXES = ("gemini-",)
 _MINIMAX_PREFIXES = ("MiniMax-",)
+_NVIDIA_PREFIXES = ("nvidia/",)
 
 # HuggingFace orgs that host local-only quantised models — never route to cloud.
 _LOCAL_HF_ORGS = (
@@ -55,6 +59,7 @@ def _load_keys() -> dict[str, str]:
         "GOOGLE_API_KEY",
         "OPENROUTER_API_KEY",
         "MINIMAX_API_KEY",
+        "NVIDIA_API_KEY",
     ):
         val = os.environ.get(name)
         if val:
@@ -72,6 +77,8 @@ def get_provider(model: str) -> str | None:
         return "google"
     if any(model.startswith(p) for p in _MINIMAX_PREFIXES):
         return "minimax"
+    if any(model.startswith(p) for p in _NVIDIA_PREFIXES):
+        return "nvidia"
     if any(model.startswith(org) for org in _LOCAL_HF_ORGS):
         return None  # local model, never route to cloud
     if "/" in model:  # openrouter format: "meta-llama/llama-3-8b"
@@ -278,6 +285,99 @@ async def _stream_google(
                     pass
 
 
+async def _stream_nvidia(
+    model: str,
+    messages: Sequence[Message],
+    temperature: float,
+    max_tokens: int,
+) -> AsyncIterator[str]:
+    """Stream a prefixed NVIDIA NIM model with bounded retries."""
+    keys = _load_keys()
+    api_key = keys.get("NVIDIA_API_KEY", "")
+    if not api_key:
+        raise ValueError("NVIDIA_API_KEY not set — add it to the server environment")
+
+    actual_model = model.removeprefix("nvidia/")
+    payload = {
+        "model": actual_model,
+        "messages": _to_openai_msgs(messages),
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    last_error: Exception | None = None
+
+    for attempt in range(1, 4):
+        yielded_content = False
+        try:
+            async with httpx.AsyncClient(timeout=180) as client:
+                async with client.stream(
+                    "POST",
+                    "https://integrate.api.nvidia.com/v1/chat/completions",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                ) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode(
+                            response.encoding or "utf-8",
+                            errors="replace",
+                        )
+                        raise RuntimeError(
+                            "NVIDIA NIM stream request failed: "
+                            f"status={response.status_code}, body={body[:1000]!r}"
+                        )
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content") or ""
+                        except (
+                            json.JSONDecodeError,
+                            KeyError,
+                            IndexError,
+                            TypeError,
+                        ) as exc:
+                            raise RuntimeError(
+                                "NVIDIA NIM returned an invalid stream chunk: "
+                                f"model={actual_model!r}, data={data[:500]!r}"
+                            ) from exc
+                        if delta:
+                            yielded_content = True
+                            yield delta
+                    return
+        except Exception as exc:
+            if yielded_content:
+                raise RuntimeError(
+                    "NVIDIA NIM stream failed after content was emitted; "
+                    f"model={actual_model!r}, error={exc}"
+                ) from exc
+            last_error = exc
+            logger.warning(
+                "NVIDIA NIM stream attempt failed",
+                extra={
+                    "attempt": attempt,
+                    "max_attempts": 3,
+                    "model": actual_model,
+                    "error": str(exc),
+                },
+            )
+
+    if last_error is None:
+        raise RuntimeError("NVIDIA NIM stream failed without an error")
+    raise RuntimeError(
+        "NVIDIA NIM stream failed after 3 attempts: "
+        f"model={actual_model!r}, error={last_error}"
+    ) from last_error
+
+
 # ---------------------------------------------------------------------------
 # Local (Ollama) direct streaming — bypasses engine routing entirely
 # ---------------------------------------------------------------------------
@@ -392,6 +492,15 @@ async def stream_cloud(
             max_tokens,
             base_url="https://api.minimax.io/v1",
             api_key_name="MINIMAX_API_KEY",
+        ):
+            yield token
+
+    elif provider == "nvidia":
+        async for token in _stream_nvidia(
+            model,
+            messages,
+            temperature,
+            max_tokens,
         ):
             yield token
 

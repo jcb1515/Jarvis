@@ -1,6 +1,6 @@
 """Cloud inference engine.
 
-OpenAI, Anthropic, Google, MiniMax, and DeepSeek API backends.
+OpenAI, Anthropic, Google, NVIDIA NIM, MiniMax, and DeepSeek API backends.
 """
 
 from __future__ import annotations
@@ -105,6 +105,12 @@ _OPENROUTER_POPULAR = [
     "openrouter/qwen/qwen3-235b-a22b",
 ]
 
+# NVIDIA NIM models use an explicit prefix so they cannot collide with models
+# exposed by Google's native Gemini API or a local OpenAI-compatible engine.
+_NVIDIA_MODELS = [
+    "nvidia/google/gemma-4-31b-it",
+]
+
 # Codex models — prefixed with "codex/" for ChatGPT Plus/Pro subscribers.
 # Uses the Responses API at chatgpt.com, not the standard OpenAI API.
 _CODEX_MODELS = [
@@ -126,6 +132,10 @@ def _is_deepseek_model(model: str) -> bool:
 
 def _is_openrouter_model(model: str) -> bool:
     return model.startswith("openrouter/")
+
+
+def _is_nvidia_model(model: str) -> bool:
+    return model.startswith("nvidia/")
 
 
 def _is_codex_model(model: str) -> bool:
@@ -321,6 +331,7 @@ class CloudEngine(InferenceEngine):
         self._anthropic_client: Any = None
         self._google_client: Any = None
         self._openrouter_client: Any = None
+        self._nvidia_client: Any = None
         self._minimax_client: Any = None
         self._deepseek_client: Any = None
         self._codex_client: Any = None
@@ -361,6 +372,18 @@ class CloudEngine(InferenceEngine):
                 self._openrouter_client = openai.OpenAI(
                     base_url="https://openrouter.ai/api/v1",
                     api_key=openrouter_key,
+                )
+            except ImportError:
+                pass
+        nvidia_key = os.environ.get("NVIDIA_API_KEY")
+        if nvidia_key:
+            try:
+                import openai
+
+                self._nvidia_client = openai.OpenAI(
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    api_key=nvidia_key,
+                    max_retries=0,
                 )
             except ImportError:
                 pass
@@ -986,6 +1009,97 @@ class CloudEngine(InferenceEngine):
             ]
         return result
 
+    def _create_nvidia_completion(
+        self,
+        create_kwargs: Dict[str, Any],
+    ) -> Any:
+        """Create an NVIDIA NIM completion with three visible attempts."""
+        if self._nvidia_client is None:
+            raise EngineConnectionError(
+                "NVIDIA NIM client not available — set NVIDIA_API_KEY"
+            )
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                return self._nvidia_client.chat.completions.create(
+                    **create_kwargs
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "NVIDIA NIM completion attempt failed",
+                    extra={
+                        "attempt": attempt,
+                        "max_attempts": 3,
+                        "model": create_kwargs.get("model", ""),
+                        "error": str(exc),
+                    },
+                )
+        if last_error is None:
+            raise RuntimeError("NVIDIA NIM completion failed without an error")
+        raise EngineConnectionError(
+            "NVIDIA NIM request failed after 3 attempts: "
+            f"model={create_kwargs.get('model')!r}, error={last_error}"
+        ) from last_error
+
+    def _generate_nvidia(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Generate through NVIDIA's hosted OpenAI-compatible NIM endpoint."""
+        actual_model = model.removeprefix("nvidia/")
+        kwargs.pop("response_format", None)
+        create_kwargs: Dict[str, Any] = {
+            "model": actual_model,
+            "messages": messages_to_dicts(messages),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        }
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+
+        t0 = time.monotonic()
+        resp = self._create_nvidia_completion(create_kwargs)
+        elapsed = time.monotonic() - t0
+        choice = resp.choices[0]
+        usage = resp.usage
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+        result: Dict[str, Any] = {
+            "content": choice.message.content or "",
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": (usage.total_tokens if usage else 0),
+            },
+            "model": resp.model,
+            "finish_reason": choice.finish_reason or "stop",
+            "cost_usd": 0.0,
+            "ttft": elapsed,
+        }
+        if getattr(choice.message, "tool_calls", None):
+            result["tool_calls"] = [
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments,
+                }
+                for tool_call in choice.message.tool_calls
+            ]
+        return result
+
     def _generate_minimax(
         self,
         messages: Sequence[Message],
@@ -1108,6 +1222,8 @@ class CloudEngine(InferenceEngine):
             return self._generate_codex(messages, **kw)
         if _is_openrouter_model(model):
             return self._generate_openrouter(messages, **kw)
+        if _is_nvidia_model(model):
+            return self._generate_nvidia(messages, **kw)
         if _is_minimax_model(model):
             return self._generate_minimax(messages, **kw)
         if _is_deepseek_model(model):
@@ -1138,6 +1254,9 @@ class CloudEngine(InferenceEngine):
                 yield token
         elif _is_openrouter_model(model):
             async for token in self._stream_openrouter(messages, **kw):
+                yield token
+        elif _is_nvidia_model(model):
+            async for token in self._stream_nvidia(messages, **kw):
                 yield token
         elif _is_minimax_model(model):
             async for token in self._stream_minimax(messages, **kw):
@@ -1337,6 +1456,39 @@ class CloudEngine(InferenceEngine):
             if delta and delta.content:
                 yield delta.content
 
+    async def _stream_nvidia(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream tokens from NVIDIA's hosted NIM endpoint."""
+        actual_model = model.removeprefix("nvidia/")
+        create_kwargs: Dict[str, Any] = {
+            "model": actual_model,
+            "messages": messages_to_dicts(messages),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        }
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        resp = self._create_nvidia_completion(create_kwargs)
+        for chunk in resp:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                yield delta.content
+
     async def _stream_minimax(
         self,
         messages: Sequence[Message],
@@ -1426,6 +1578,22 @@ class CloudEngine(InferenceEngine):
                 "stream": True,
                 **kwargs,
             }
+        elif _is_nvidia_model(model):
+            client = self._nvidia_client
+            if client is None:
+                raise EngineConnectionError("NVIDIA NIM client not available")
+            actual_model = model.removeprefix("nvidia/")
+            create_kwargs = {
+                "model": actual_model,
+                "messages": messages_to_dicts(messages),
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True,
+                "extra_body": {
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+                **kwargs,
+            }
         elif _is_minimax_model(model):
             client = self._minimax_client
             if client is None:
@@ -1465,7 +1633,10 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
-        resp = client.chat.completions.create(**create_kwargs)
+        if _is_nvidia_model(model):
+            resp = self._create_nvidia_completion(create_kwargs)
+        else:
+            resp = client.chat.completions.create(**create_kwargs)
         for chunk in resp:
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
@@ -1616,6 +1787,8 @@ class CloudEngine(InferenceEngine):
             models.extend(_GOOGLE_MODELS)
         if self._openrouter_client is not None:
             models.extend(_OPENROUTER_POPULAR)
+        if self._nvidia_client is not None:
+            models.extend(_NVIDIA_MODELS)
         if self._minimax_client is not None:
             models.extend(_MINIMAX_MODELS)
         if self._deepseek_client is not None:
@@ -1641,6 +1814,8 @@ class CloudEngine(InferenceEngine):
             return self._codex_client
         if _is_openrouter_model(model):
             return self._openrouter_client
+        if _is_nvidia_model(model):
+            return self._nvidia_client
         if _is_minimax_model(model):
             return self._minimax_client
         if _is_deepseek_model(model):
@@ -1672,6 +1847,7 @@ class CloudEngine(InferenceEngine):
             or self._anthropic_client is not None
             or self._google_client is not None
             or self._openrouter_client is not None
+            or self._nvidia_client is not None
             or self._minimax_client is not None
             or self._deepseek_client is not None
             or self._codex_client is not None
@@ -1692,6 +1868,10 @@ class CloudEngine(InferenceEngine):
             if hasattr(self._openrouter_client, "close"):
                 self._openrouter_client.close()
             self._openrouter_client = None
+        if self._nvidia_client is not None:
+            if hasattr(self._nvidia_client, "close"):
+                self._nvidia_client.close()
+            self._nvidia_client = None
         if self._minimax_client is not None:
             if hasattr(self._minimax_client, "close"):
                 self._minimax_client.close()

@@ -8,6 +8,7 @@ Each tool is registered via ``@ToolRegistry.register("name")`` and implements
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import time
 from abc import ABC, abstractmethod
@@ -208,17 +209,74 @@ class ToolExecutor:
         # Confirmation check for sensitive tools
         if tool.spec.requires_confirmation:
             if not self._interactive or self._confirm_callback is None:
-                return ToolResult(
-                    tool_name=tool_call.name,
-                    content=(
-                        f"Tool '{tool_call.name}' requires"
-                        " confirmation but no confirmation"
-                        " callback is available."
-                    ),
-                    success=False,
+                from openjarvis.tools.approval_store import (
+                    STATUS_EXECUTED,
+                    TIER_HIGH,
+                    ApprovalStore,
                 )
+
+                canonical_args = json.dumps(
+                    params,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                fingerprint = hashlib.sha256(
+                    f"{tool_call.name}:{canonical_args}".encode("utf-8")
+                ).hexdigest()[:20]
+                permission_key = f"mcp_tool:{fingerprint}"
+                approval_store = ApprovalStore()
+                approved = next(
+                    (
+                        action
+                        for action in approval_store.list_approved()
+                        if action.permission_key == permission_key
+                    ),
+                    None,
+                )
+                if approved is not None:
+                    approval_store.update_status(approved.id, STATUS_EXECUTED)
+                else:
+                    pending = next(
+                        (
+                            action
+                            for action in approval_store.list_pending()
+                            if action.permission_key == permission_key
+                        ),
+                        None,
+                    )
+                    if pending is None:
+                        server_name = str(
+                            tool.spec.metadata.get("mcp_server", "external")
+                        )
+                        pending = approval_store.queue_action(
+                            action_type=tool_call.name,
+                            description=(
+                                f"Allow {server_name} to run "
+                                f"{tool_call.name} with the supplied arguments"
+                            ),
+                            payload={
+                                "tool": tool_call.name,
+                                "arguments": params,
+                                "server": server_name,
+                            },
+                            permission_key=permission_key,
+                            tier=TIER_HIGH,
+                        )
+                    return ToolResult(
+                        tool_name=tool_call.name,
+                        content=(
+                            f"PENDING_APPROVAL:{pending.id}. "
+                            "The user must approve this external write action, "
+                            "then repeat the request."
+                        ),
+                        success=False,
+                    )
             prompt = f"Allow execution of tool '{tool_call.name}' with args {params}?"
-            if not self._confirm_callback(prompt):
+            if (
+                self._interactive
+                and self._confirm_callback is not None
+                and not self._confirm_callback(prompt)
+            ):
                 return ToolResult(
                     tool_name=tool_call.name,
                     content=f"Tool '{tool_call.name}' execution denied by user.",

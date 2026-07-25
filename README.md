@@ -1,178 +1,195 @@
-<div align="center">
-  <img alt="OpenJarvis" src="assets/OpenJarvis_Horizontal_Logo.png" width="400">
+# JARVIS
 
-  <p><i>Personal AI, On Personal Devices.</i></p>
+A voice-first, locally operated AI command console built on
+[OpenJarvis](https://github.com/open-jarvis/OpenJarvis).
 
-  <p>
-    <a href="https://arxiv.org/abs/2605.17172"><img src="https://img.shields.io/badge/arXiv-2605.17172-b31b1b.svg" alt="arXiv"></a>
-    <a href="https://openjarvis.stanford.edu/"><img src="https://img.shields.io/badge/project-OpenJarvis-blue" alt="Project"></a>
-    <a href="https://open-jarvis.github.io/OpenJarvis/"><img src="https://img.shields.io/badge/docs-mkdocs-blue" alt="Docs"></a>
-    <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" alt="Python">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
-    <a href="https://discord.gg/CMVBmDQ5Fj"><img src="https://img.shields.io/badge/discord-join-7289da?logo=discord&logoColor=white" alt="Discord"></a>
-    <a href="https://x.com/OpenJarvisAI"><img src="https://img.shields.io/badge/X-@OpenJarvisAI-black?logo=x&logoColor=white" alt="X / Twitter"></a>
-  </p>
-</div>
+![JARVIS console reference](design/jarvis-console-reference.png)
 
----
+JARVIS combines a Gemma 4 agent brain hosted through NVIDIA NIM, OpenAI's
+open-source Whisper speech
+recognition, high-quality ElevenLabs speech, a local Kokoro voice fallback, and
+confirmation-gated MCP tools in one desktop-ready interface.
 
-<div align="center">
-  <img alt="OpenJarvis demo reel" src="assets/openjarvis_demo_reel.webp" width="75%">
-</div>
+## What is implemented
 
----
+- Hold-to-talk microphone capture with `Space` or the on-screen control.
+- Local transcription through the official
+  [openai/whisper](https://github.com/openai/whisper) repository.
+- Partial transcripts sent over one local WebSocket every 1.8 seconds, followed
+  by a finalized transcript when push-to-talk is released.
+- Two real Web Audio visualizers:
+  - the small ring reads live microphone frequency data;
+  - the central ring reads the synthesized assistant audio.
+- Streaming OpenJarvis agent and tool events.
+- Immediate ElevenLabs audio streaming to browser playback when configured.
+- ElevenLabs voice selection tuned toward a calm, articulate British
+  AI-assistant character.
+- Automatic local Kokoro TTS fallback when ElevenLabs is unavailable.
+- MCP tool safety classification: read operations can run directly; browser,
+  filesystem, note, and other write-like operations require confirmation.
+- A live approval queue with approve and deny actions.
+- Typed-command fallback and a responsive red/black command-center UI.
 
-> **[Documentation](https://open-jarvis.github.io/OpenJarvis/)**
->
-> **[Project Site](https://openjarvis.stanford.edu/)**
->
-> **[Paper](https://arxiv.org/abs/2605.17172)**
->
-> **[Leaderboard](https://open-jarvis.github.io/OpenJarvis/leaderboard/)**
->
-> **[Roadmap](https://open-jarvis.github.io/OpenJarvis/development/roadmap/)**
+The ElevenLabs profile is intentionally an original, JARVIS-inspired delivery.
+It does not clone or claim to reproduce a film actor's voice.
 
-## Why OpenJarvis?
+## Requirements
 
-Personal AI agents are exploding in popularity, but nearly all of them still route intelligence through cloud APIs. Your "personal" AI continues to depend on someone else's server. At the same time, our [Intelligence Per Watt](https://www.intelligence-per-watt.ai/) research showed that local language models already handle 88.7% of single-turn chat and reasoning queries, with intelligence efficiency improving 5.3× from 2023 to 2025. The models and hardware are increasingly ready. What has been missing is the software stack to make local-first personal AI practical.
+- Windows 10/11, macOS, or Linux
+- Python 3.10–3.13
+- Node.js 20+
+- [uv](https://docs.astral.sh/uv/)
+- An NVIDIA API key for the configured hosted Gemma 4 agent brain
+- No system FFmpeg install is required; the speech extra installs a
+  project-local FFmpeg binary through `imageio-ffmpeg`.
 
-OpenJarvis is that stack. It is a framework for local-first personal AI, built around three core ideas: shared primitives for building on-device agents; evaluations that treat energy, FLOPs, latency, and dollar cost as first-class constraints alongside accuracy; and a learning loop that improves models using local trace data. The goal is simple: make it possible to build personal AI agents that run locally by default, calling the cloud only when truly necessary. OpenJarvis aims to be both a research platform and a production foundation for local AI, in the spirit of PyTorch.
+An NVIDIA GPU is optional. Whisper uses CUDA when available and otherwise runs
+on CPU.
 
-## Installation
+## Setup
 
-Pick your platform and run one command. Each installer handles [uv](https://docs.astral.sh/uv/), the Python venv, Ollama, and a starter model — about 3 minutes on broadband.
-
-| Platform | One-liner |
-|---|---|
-| **macOS · Linux · WSL2** | `curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh \| bash` |
-| **Native Windows** | `irm https://open-jarvis.github.io/OpenJarvis/install.ps1 \| iex` |
-| **Desktop GUI** | Download `.exe` / `.dmg` / `.deb` / `.rpm` / `.AppImage` from the [latest release](https://github.com/open-jarvis/OpenJarvis/releases) |
-
-Then `jarvis` to start. The Rust extension and larger models continue downloading in the background; `jarvis doctor` shows status.
-
-Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual / contributor install): see the [installation docs](https://open-jarvis.github.io/OpenJarvis/getting-started/install/).
-
-## Quick Start
-
-```bash
-jarvis                          # start chatting (default: chat-simple)
-jarvis init --preset <name>     # switch to a starter config
+```powershell
+git clone https://github.com/jcb1515/Jarvis.git
+cd Jarvis
+uv sync --extra desktop
+Copy-Item .env.example .env
+Copy-Item configs/jarvis-assistant.toml "$HOME/.openjarvis/config.toml"
+cd frontend
+npm install
 ```
 
-> Prefix `jarvis ...` with `uv run`, or `source .venv/bin/activate` first.
+`uv sync --extra desktop` installs Whisper directly from the pinned official
+GitHub revision in `pyproject.toml`, along with a project-local FFmpeg runtime
+for WAV, MP3, and browser WebM decoding. No transcription API key or per-minute
+fee is required. The configured Whisper model is downloaded once on first use
+and cached locally.
 
-| Preset | What it does |
-|---|---|
-| `morning-digest-mac` / `morning-digest-linux` / `morning-digest-minimal` | Spoken daily briefing from email, calendar, health, news |
-| `deep-research` | Multi-hop research across indexed docs with citations |
-| `code-assistant` | Agent with code execution, file I/O, and shell access |
-| `scheduled-monitor` | Stateful agent on a schedule with memory |
-| `chat-simple` | Lightweight conversation, no tools |
+Edit `.env` and add your NVIDIA key. Add ElevenLabs if you want the primary
+cloud voice:
 
-Example:
-
-```bash
-jarvis init --preset morning-digest-mac
-jarvis connect gdrive          # one OAuth covers Gmail / Calendar / Tasks
-jarvis digest --fresh          # generate and play your first briefing
+```dotenv
+NVIDIA_API_KEY=your_nvidia_key_here
+ELEVENLABS_API_KEY=your_key_here
+# Optional: force a voice from ElevenLabs "My Voices".
+ELEVENLABS_VOICE_ID=
 ```
 
-Per-preset deep dives: [morning digest](https://open-jarvis.github.io/OpenJarvis/user-guide/morning-digest/) · [deep research](https://open-jarvis.github.io/OpenJarvis/user-guide/deep-research/) · [code assistant](https://open-jarvis.github.io/OpenJarvis/user-guide/code-assistant/) · [scheduled monitor](https://open-jarvis.github.io/OpenJarvis/user-guide/scheduled-monitor/) · [chat simple](https://open-jarvis.github.io/OpenJarvis/user-guide/chat-simple/) · or the full [quickstart guide](https://open-jarvis.github.io/OpenJarvis/getting-started/quickstart/).
+Without an ElevenLabs key, speech synthesis uses the local Kokoro backend.
+The configured model ID is `nvidia/google/gemma-4-31b-it`; the prefix selects
+NVIDIA's OpenAI-compatible NIM endpoint, while the upstream model ID sent to
+NVIDIA remains `google/gemma-4-31b-it`.
 
-### Skills
+The sample MCP list connects directly to Obsidian Local REST API's built-in
+MCP endpoint. Its default HTTPS endpoint uses a self-signed certificate, so
+TLS verification is disabled only for this loopback connection. Set the three
+`OBSIDIAN_*` values before starting JARVIS.
 
-Skills teach agents how to better use tools and improve their reasoning. Every skill is a tool — agents discover them from a catalog and invoke them on demand.
+## Run
 
-```bash
-# Install skills from public sources
-jarvis skill install hermes:arxiv
-jarvis skill sync hermes --category research
+Start the local backend from the repository root:
 
-# Use skills with any agent
-jarvis ask "Use the code-explainer skill to explain this Python code: for i in range(5): print(i*2)"
-
-# Optimize skills from your trace history
-jarvis optimize skills --policy dspy
-
-# Benchmark the impact
-jarvis bench skills --max-samples 5 --seeds 42
+```powershell
+$env:OPENJARVIS_CONFIG="$PWD/configs/jarvis-assistant.toml"
+uv run --env-file .env jarvis serve
 ```
 
-Import from [Hermes Agent](https://github.com/NousResearch/hermes-agent) (~150 skills), [OpenClaw](https://github.com/openclaw/skills) (~13,700 community skills), or any GitHub repo. Skills follow the [agentskills.io](https://agentskills.io/specification) open standard.
+In another terminal:
 
-See the [Skills User Guide](https://open-jarvis.github.io/OpenJarvis/user-guide/skills/) and [Skills Tutorial](https://open-jarvis.github.io/OpenJarvis/tutorials/skills-workflow/) for details.
-
-### Built-in Agents
-
-OpenJarvis ships with eight built-in agents across three execution modes (on-demand, scheduled, continuous):
-
-| Agent | Type | What it does |
-|-------|------|-------------|
-| `morning_digest` | Scheduled | Daily briefing from email, calendar, health, news — with TTS audio |
-| `deep_research` | On-demand | Multi-hop research with citations across web and local docs |
-| `monitor_operative` | Continuous | Long-horizon monitoring with memory, compression, and retrieval |
-| `orchestrator` | On-demand | Multi-turn reasoning with automatic tool selection |
-| `native_react` | On-demand | ReAct (Thought-Action-Observation) loop agent |
-| `operative` | Continuous | Persistent autonomous agent with state management |
-| `native_openhands` | On-demand | CodeAct — generates and executes Python code |
-| `simple` | On-demand | Single-turn chat, no tools |
-
-See the [User Guide](https://open-jarvis.github.io/OpenJarvis/user-guide/morning-digest/) and [Tutorials](https://open-jarvis.github.io/OpenJarvis/tutorials/) for detailed setup instructions.
-
-Full documentation — including Docker deployment, cloud engines, development setup, and tutorials — at **[open-jarvis.github.io/OpenJarvis](https://open-jarvis.github.io/OpenJarvis/)**.
-
-## Community
-
-- **GitHub:** [github.com/open-jarvis/OpenJarvis](https://github.com/open-jarvis/OpenJarvis)
-- **Discord:** [discord.gg/CMVBmDQ5Fj](https://discord.gg/CMVBmDQ5Fj)
-- **X / Twitter:** [@OpenJarvisAI](https://x.com/OpenJarvisAI)
-- **Docs:** [open-jarvis.github.io/OpenJarvis](https://open-jarvis.github.io/OpenJarvis/)
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](CONTRIBUTING.md) for incentives, contribution types, and the PR process.
-
-Quick start for contributors:
-
-```bash
-git clone https://github.com/open-jarvis/OpenJarvis.git
-cd OpenJarvis
-uv sync --extra dev
-uv run pre-commit install
-uv run pytest tests/ -v
+```powershell
+cd frontend
+npm run dev
 ```
 
-Browse the [Roadmap](https://open-jarvis.github.io/OpenJarvis/development/roadmap/) for areas where help is needed. Comment **"take"** on any issue to get auto-assigned.
+Open `http://localhost:5173`. Hold `Space`, speak, and release to transcribe and
+send. You can also type a command in the bottom field.
 
-## About
+The first Whisper transcription can take longer because the selected model must
+be downloaded and loaded. Change `speech.model` in the config:
 
-OpenJarvis is part of [Intelligence Per Watt](https://www.intelligence-per-watt.ai/), a research initiative studying the intelligence efficiency of AI systems. The project is developed at [Hazy Research](https://hazyresearch.stanford.edu/) and the [Scaling Intelligence Lab](https://scalingintelligence.stanford.edu/) at [Stanford SAIL](https://ai.stanford.edu/).
+| Model | Relative speed | Relative accuracy |
+| --- | --- | --- |
+| `tiny` | Fastest | Basic |
+| `base` | Fast | Good default |
+| `small` | Moderate | Better |
+| `medium` | Slow | High |
+| `turbo` | GPU-oriented | High |
 
-## Sponsors
+## Voice character
 
-<p>
-  <a href="https://www.laude.org/">Laude Institute</a> &bull;
-  <a href="https://datascience.stanford.edu/marlowe">Stanford Marlowe</a> &bull;
-  <a href="https://cloud.google.com/">Google Cloud Platform</a> &bull;
-  <a href="https://lambda.ai/">Lambda Labs</a> &bull;
-  <a href="https://ollama.com/">Ollama</a> &bull;
-  <a href="https://research.ibm.com/">IBM Research</a> &bull;
-  <a href="https://hai.stanford.edu/">Stanford HAI</a>
-</p>
+When `ELEVENLABS_VOICE_ID` is blank, the backend lists the voices available to
+your account and ranks them for qualities such as British, baritone,
+articulate, crisp, calm, and professional. It then applies a stable, deliberate
+delivery profile. To select a voice manually, copy its ID from ElevenLabs
+**My Voices** and set `ELEVENLABS_VOICE_ID`.
 
-## Citation
-```bibtex
-@misc{saadfalcon2026openjarvispersonalaipersonal,
-      title={OpenJarvis: Personal AI, On Personal Devices}, 
-      author={Jon Saad-Falcon and Avanika Narayan and Robby Manihani and Tanvir Bhathal and Herumb Shandilya and Hakki Orhun Akengin and Gabriel Bo and Andrew Park and Matthew Hart and Caia Costello and Chuan Li and Christopher Ré and Azalia Mirhoseini},
-      year={2026},
-      eprint={2605.17172},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2605.17172}, 
-}
+## MCP tools and approvals
+
+The sample config includes Playwright and Obsidian MCP server definitions.
+Every server may specify:
+
+- `read_only_tools`: explicit tools that can execute immediately;
+- `write_tools`: explicit tools that always require confirmation;
+- `default_mode`: use `confirm` for unknown tools.
+
+Tool-name classification adds a second safety layer. Names containing operations
+such as `create`, `delete`, `click`, `fill`, `send`, or `write` are treated as
+writes. Playwright navigation, page reading, snapshots, console inspection, and
+network inspection are explicitly read-only. Unknown tools default to
+confirmation.
+
+The Obsidian entry expects Local REST API at
+`https://127.0.0.1:27124/mcp/`. Set its bearer key in `.env` before starting
+JARVIS. Read operations such as vault listing and search run directly; note
+creation, edits, deletes, moves, commands, and UI-opening actions require
+confirmation. If you do not use Obsidian, set that server object's `enabled`
+field to `false`.
+
+## Configuration
+
+The main project configuration is
+[`configs/jarvis-assistant.toml`](configs/jarvis-assistant.toml). The assistant
+persona is in [`prompts/jarvis-system.md`](prompts/jarvis-system.md).
+
+Important values:
+
+```toml
+[intelligence]
+default_model = "nvidia/google/gemma-4-31b-it"
+preferred_engine = "cloud"
+provider = "nvidia"
+
+[speech]
+backend = "whisper"
+model = "base"
+device = "auto"
+tts_backend = "auto"
+tts_speed = 0.92
+auto_speak = true
 ```
 
-## License
+## Validation
 
-[Apache 2.0](LICENSE)
+```powershell
+uv run ruff check src/openjarvis
+uv run pytest tests/speech tests/mcp/test_safety.py tests/tools/test_mcp_adapter.py
+cd frontend
+npm run build
+npm test
+```
+
+## Security and privacy
+
+- Whisper transcription stays on the machine.
+- Ollama/local-model prompts stay on the machine.
+- Text sent to ElevenLabs leaves the machine when that backend is enabled.
+- MCP write-like tools are confirmation-gated.
+- Never commit `.env`, API keys, local model files, recordings, or approval
+  databases.
+
+## Project foundation and license
+
+This project builds on
+[OpenJarvis](https://github.com/open-jarvis/OpenJarvis) and retains its Apache
+2.0 license. OpenAI Whisper is installed from its official repository and is
+licensed separately under MIT. Review third-party service terms before
+commercial use, especially ElevenLabs voice and output licensing.

@@ -25,6 +25,7 @@ def _make_cloud_engine(**overrides: Any) -> Any:
     engine._anthropic_client = overrides.get("anthropic_client")
     engine._google_client = overrides.get("google_client")
     engine._openrouter_client = overrides.get("openrouter_client")
+    engine._nvidia_client = overrides.get("nvidia_client")
     engine._minimax_client = overrides.get("minimax_client")
     return engine
 

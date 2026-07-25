@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Outlet, useNavigate } from 'react-router';
+import { Outlet, useLocation, useNavigate } from 'react-router';
 import { ApprovalBell } from './ApprovalBell';
 import { Sidebar } from './Sidebar/Sidebar';
 import { SystemPulse } from './SystemPulse';
@@ -8,9 +8,16 @@ import { checkHealth } from '../lib/api';
 
 export function Layout() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  const location = useLocation();
+  const isJarvisConsole = location.pathname === '/';
+  const isDemo = new URLSearchParams(location.search).get('demo') === '1';
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
 
   useEffect(() => {
+    if (isDemo) {
+      setApiReachable(true);
+      return;
+    }
     const check = () => checkHealth().then(setApiReachable);
     check();
     const interval = setInterval(check, 30000);
@@ -20,18 +27,18 @@ export function Layout() {
       clearInterval(interval);
       window.removeEventListener('focus', onFocus);
     };
-  }, []);
+  }, [isDemo]);
 
   const navigate = useNavigate();
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden relative" style={{ paddingTop: '3px' }}>
       <div className="hud-backdrop" aria-hidden="true" />
-      <SystemPulse apiReachable={apiReachable} />
-      <ApprovalBell />
+      {!isJarvisConsole && <SystemPulse apiReachable={apiReachable} />}
+      {!isJarvisConsole && <ApprovalBell />}
 
       {/* Health check banner */}
-      {apiReachable === false && (
+      {apiReachable === false && !isJarvisConsole && (
         <div
           className="flex items-center gap-3 px-4 py-2 text-sm shrink-0"
           style={{
@@ -56,8 +63,8 @@ export function Layout() {
       )}
 
       <div className="flex flex-1 min-h-0 relative z-10">
-        <Sidebar />
-        {sidebarOpen && (
+        {!isJarvisConsole && <Sidebar />}
+        {sidebarOpen && !isJarvisConsole && (
           <div
             className="fixed inset-0 z-20 bg-black/40 md:hidden"
             onClick={() => useAppStore.getState().setSidebarOpen(false)}

@@ -6,6 +6,7 @@ Falls back gracefully if not installed.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 from typing import List
 
@@ -73,8 +74,5 @@ class KokoroTTSBackend(TTSBackend):
         return ["af_heart", "af_bella", "am_adam", "am_michael"]
 
     def health(self) -> bool:
-        try:
-            self._ensure_pipeline()
-            return True
-        except RuntimeError:
-            return False
+        """Report package availability without downloading models."""
+        return importlib.util.find_spec("kokoro") is not None

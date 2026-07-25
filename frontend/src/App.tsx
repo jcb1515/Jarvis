@@ -18,6 +18,7 @@ import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
 
 export default function App() {
+  const isDemo = new URLSearchParams(window.location.search).get('demo') === '1';
   const [setupDone, setSetupDone] = useState(!isTauri());
   const handleSetupReady = useCallback(() => {
     setSetupDone(true);
@@ -67,6 +68,18 @@ export default function App() {
 
   // Fetch models on mount
   useEffect(() => {
+    if (isDemo) {
+      const demoModel = {
+        id: 'nvidia/google/gemma-4-31b-it',
+        object: 'model',
+        created: 0,
+        owned_by: 'nvidia',
+      };
+      setModels([demoModel]);
+      setSelectedModel(demoModel.id);
+      setModelsLoading(false);
+      return;
+    }
     fetchModels()
       .then((m) => {
         setModels(m);
@@ -78,11 +91,13 @@ export default function App() {
 
   // Fetch server info
   useEffect(() => {
+    if (isDemo) return;
     fetchServerInfo().then(setServerInfo).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll savings and optionally share to Supabase
   useEffect(() => {
+    if (isDemo) return;
     const refresh = () =>
       fetchSavings()
         .then((data) => {
@@ -121,6 +136,7 @@ export default function App() {
 
   // Show opt-in modal on first visit
   useEffect(() => {
+    if (isDemo) return;
     if (!optInModalSeen) {
       setOptInModalOpen(true);
       markOptInModalSeen();
@@ -182,7 +198,7 @@ export default function App() {
 
   return (
     <>
-      <UpdateChecker />
+      {!isDemo && <UpdateChecker />}
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<ChatPage />} />
@@ -196,7 +212,7 @@ export default function App() {
       </Routes>
       <Toaster position="bottom-right" />
       {commandPaletteOpen && <CommandPalette />}
-      {optInModalOpen && (
+      {!isDemo && optInModalOpen && (
         <OptInModal onClose={() => setOptInModalOpen(false)} />
       )}
     </>

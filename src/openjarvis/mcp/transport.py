@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from openjarvis.mcp.protocol import MCPRequest, MCPResponse
 
@@ -58,19 +60,31 @@ class StdioTransport(MCPTransport):
     stdin/stdout.
     """
 
-    def __init__(self, command: List[str]) -> None:
+    def __init__(
+        self,
+        command: List[str],
+        env: Optional[Dict[str, str]] = None,
+    ) -> None:
         self._command = command
+        self._env = env
         self._process: Optional[subprocess.Popen[str]] = None
         self._start()
 
     def _start(self) -> None:
         """Start the subprocess."""
+        executable = shutil.which(self._command[0])
+        if executable is None:
+            raise FileNotFoundError(
+                f"MCP executable {self._command[0]!r} was not found on PATH"
+            )
+        resolved_command = [executable, *self._command[1:]]
         self._process = subprocess.Popen(
-            self._command,
+            resolved_command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env={**os.environ, **self._env} if self._env is not None else None,
         )
 
     def send(self, request: MCPRequest) -> MCPResponse:
@@ -123,6 +137,7 @@ class StreamableHTTPTransport(MCPTransport):
         url: str,
         *,
         token: Optional[str] = None,
+        verify_tls: bool = True,
         connect_timeout: float = 10.0,
         request_timeout: float = 60.0,
     ) -> None:
@@ -132,6 +147,7 @@ class StreamableHTTPTransport(MCPTransport):
         self._token = token
         self._session_id: Optional[str] = None
         self._client = httpx.Client(
+            verify=verify_tls,
             timeout=httpx.Timeout(
                 connect=connect_timeout,
                 read=request_timeout,

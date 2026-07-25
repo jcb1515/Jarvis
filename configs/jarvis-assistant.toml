@@ -1,0 +1,61 @@
+[intelligence]
+default_model = "nvidia/google/gemma-4-31b-it"
+preferred_engine = "cloud"
+provider = "nvidia"
+temperature = 0.2
+max_tokens = 2048
+
+[agent]
+default_agent = "native_openhands"
+max_turns = 12
+tools = ""
+objective = "Operate as a concise, voice-first local personal assistant"
+system_prompt_path = "prompts/jarvis-system.md"
+context_from_memory = true
+
+[speech]
+backend = "whisper"
+model = "base"
+language = ""
+device = "auto"
+compute_type = "float16"
+tts_backend = "auto"
+tts_voice = ""
+tts_speed = 0.92
+auto_speak = true
+vad_enabled = true
+vad_threshold = 0.5
+vad_min_silence_ms = 700
+
+[tools.mcp]
+enabled = true
+servers = """
+[
+  {
+    "name": "playwright",
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest"],
+    "read_only_tools": ["browser_navigate", "browser_snapshot", "browser_console_messages", "browser_network_requests"],
+    "write_tools": ["browser_click", "browser_type", "browser_fill_form", "browser_press_key", "browser_close"],
+    "default_mode": "confirm"
+  },
+  {
+    "name": "obsidian",
+    "enabled": true,
+    "url": "https://${OBSIDIAN_HOST}:${OBSIDIAN_PORT}/mcp/",
+    "token": "${OBSIDIAN_API_KEY}",
+    "verify_tls": false,
+    "read_only_tools": ["vault_list", "vault_read", "vault_get_document_map", "active_file_get_path", "search_query", "search_simple", "tag_list", "command_list"],
+    "write_tools": ["vault_write", "vault_append", "vault_patch", "vault_delete", "vault_move", "vault_copy", "command_execute", "open_file"],
+    "default_mode": "confirm"
+  }
+]
+"""
+
+[server]
+host = "127.0.0.1"
+port = 8000
+agent = "native_openhands"
+
+[security]
+profile = "personal"

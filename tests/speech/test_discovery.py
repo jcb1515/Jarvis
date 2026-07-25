@@ -43,6 +43,7 @@ def test_auto_discovery_priority():
     """Auto mode tries backends in priority order."""
     from openjarvis.speech._discovery import DISCOVERY_ORDER
 
-    assert DISCOVERY_ORDER[0] == "faster-whisper"
+    assert DISCOVERY_ORDER[0] == "whisper"
+    assert "faster-whisper" in DISCOVERY_ORDER
     assert "openai" in DISCOVERY_ORDER
     assert "deepgram" in DISCOVERY_ORDER

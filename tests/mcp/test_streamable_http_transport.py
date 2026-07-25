@@ -32,6 +32,18 @@ def _make_http_response(result, *, session_id=None):
 
 
 class TestStreamableHTTPTransport:
+    def test_tls_policy_is_forwarded_to_httpx(self):
+        """Loopback self-signed MCP endpoints can opt out explicitly."""
+        from openjarvis.mcp.transport import StreamableHTTPTransport
+
+        with patch("httpx.Client") as mock_client, patch("httpx.Timeout"):
+            StreamableHTTPTransport(
+                "https://127.0.0.1:27124/mcp/",
+                verify_tls=False,
+            )
+
+        assert mock_client.call_args.kwargs["verify"] is False
+
     def test_send_request(self, _mock_httpx_client):
         """Verify correct URL, headers, JSON body, and MCPResponse parsing."""
         from openjarvis.mcp.transport import StreamableHTTPTransport

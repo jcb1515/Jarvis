@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -84,15 +85,36 @@ def load_mcp_tools_from_config(
         try:
             cfg = json.loads(server_cfg) if isinstance(server_cfg, str) else server_cfg
             name = cfg.get("name", "<unnamed>")
-            url = cfg.get("url")
-            token = cfg.get("token")
+            if cfg.get("enabled", True) is False:
+                logger.info("MCP server '%s' is disabled in config", name)
+                continue
+            raw_url = cfg.get("url")
+            url = os.path.expandvars(str(raw_url)) if raw_url else None
+            raw_token = cfg.get("token")
+            token = os.path.expandvars(str(raw_token)) if raw_token else None
+            verify_tls = cfg.get("verify_tls", True)
+            if not isinstance(verify_tls, bool):
+                raise TypeError(
+                    f"MCP server {name!r} verify_tls must be a boolean"
+                )
             command = cfg.get("command", "")
             args = cfg.get("args", [])
+            process_env = {
+                str(key): os.path.expandvars(str(value))
+                for key, value in cfg.get("env", {}).items()
+            }
 
             if url:
-                transport = StreamableHTTPTransport(url=url, token=token)
+                transport = StreamableHTTPTransport(
+                    url=url,
+                    token=token,
+                    verify_tls=verify_tls,
+                )
             elif command:
-                transport = StdioTransport(command=[command] + args)
+                transport = StdioTransport(
+                    command=[command] + args,
+                    env=process_env,
+                )
             else:
                 logger.warning(
                     "MCP server '%s' has neither 'url' nor 'command' — skipping",
@@ -104,7 +126,13 @@ def load_mcp_tools_from_config(
             client.initialize()
             clients.append(client)
 
-            provider = MCPToolProvider(client)
+            provider = MCPToolProvider(
+                client,
+                server_name=name,
+                read_only_tools=cfg.get("read_only_tools", []),
+                write_tools=cfg.get("write_tools", []),
+                default_mode=cfg.get("default_mode", "confirm"),
+            )
             discovered = provider.discover()
 
             include_tools = set(cfg.get("include_tools", []))

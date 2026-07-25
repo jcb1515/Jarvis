@@ -99,6 +99,7 @@ class TestLoaderTokenPlumbing:
         _mock_mcp_stack["http"].assert_called_once_with(
             url="http://homeassistant.local:8123/mcp",
             token="ha-llat-secret",
+            verify_tls=True,
         )
 
     def test_no_token_passes_none(self, _mock_mcp_stack):
@@ -113,6 +114,34 @@ class TestLoaderTokenPlumbing:
         _mock_mcp_stack["http"].assert_called_once_with(
             url="http://localhost:9583/mcp",
             token=None,
+            verify_tls=True,
+        )
+
+    def test_expands_environment_and_passes_tls_policy(
+        self,
+        _mock_mcp_stack,
+        monkeypatch,
+    ):
+        """Environment-backed secrets stay out of tracked MCP config."""
+        from openjarvis.mcp.loader import load_mcp_tools_from_config
+
+        monkeypatch.setenv("TEST_MCP_TOKEN", "local-secret")
+        cfg = _make_mcp_cfg(
+            enabled=True,
+            servers=[
+                {
+                    "name": "obsidian",
+                    "url": "https://127.0.0.1:27124/mcp/",
+                    "token": "${TEST_MCP_TOKEN}",
+                    "verify_tls": False,
+                }
+            ],
+        )
+        load_mcp_tools_from_config(cfg)
+        _mock_mcp_stack["http"].assert_called_once_with(
+            url="https://127.0.0.1:27124/mcp/",
+            token="local-secret",
+            verify_tls=False,
         )
 
     def test_stdio_server_does_not_get_token_kwarg(self, _mock_mcp_stack):
@@ -127,7 +156,8 @@ class TestLoaderTokenPlumbing:
         )
         load_mcp_tools_from_config(cfg)
         _mock_mcp_stack["stdio"].assert_called_once_with(
-            command=["mcp-server-foo", "--flag"]
+            command=["mcp-server-foo", "--flag"],
+            env={},
         )
 
 

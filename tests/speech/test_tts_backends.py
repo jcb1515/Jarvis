@@ -75,8 +75,11 @@ def test_kokoro_health_false_without_package():
     from openjarvis.speech.kokoro_tts import KokoroTTSBackend
 
     backend = KokoroTTSBackend()
-    # Without kokoro installed, health returns False
-    assert backend.health() is False
+    with patch(
+        "openjarvis.speech.kokoro_tts.importlib.util.find_spec",
+        return_value=None,
+    ):
+        assert backend.health() is False
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from openjarvis.engine.cloud import (
     CloudEngine,
     _is_codex_model,
     _is_deepseek_model,
+    _is_nvidia_model,
     _is_openai_model,
     _is_openrouter_model,
     estimate_cost,
@@ -460,6 +461,7 @@ class TestCloudEngineCanServe:
             "_anthropic_client",
             "_google_client",
             "_openrouter_client",
+            "_nvidia_client",
             "_minimax_client",
             "_deepseek_client",
             "_codex_client",
@@ -510,6 +512,16 @@ class TestCloudEngineCanServe:
         eng = self._engine(_anthropic_client=object())
         assert eng.can_serve("claude-sonnet-4") is True
         assert eng.can_serve("gpt-4o") is False
+
+    def test_nvidia_only_serves_prefixed_nvidia_models(self) -> None:
+        eng = self._engine(_nvidia_client=object())
+        assert eng.can_serve("nvidia/google/gemma-4-31b-it") is True
+        assert eng.can_serve("google/gemma-4-31b-it") is False
+        assert eng.can_serve("gemini-2.5-flash") is False
+
+    def test_nvidia_model_predicate(self) -> None:
+        assert _is_nvidia_model("nvidia/google/gemma-4-31b-it") is True
+        assert _is_nvidia_model("google/gemma-4-31b-it") is False
 
     def test_deepseek_only_serves_deepseek_models(self) -> None:
         """The DeepSeek client serves deepseek-* models (and only those)."""

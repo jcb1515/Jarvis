@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, List, Optional
 
 from openjarvis.core.config import JarvisConfig, load_config
@@ -626,15 +627,26 @@ class SystemBuilder:
 
         cfg = json.loads(server_cfg) if isinstance(server_cfg, str) else server_cfg
         name = cfg.get("name", "<unnamed>")
-        url = cfg.get("url")
+        raw_url = cfg.get("url")
+        url = os.path.expandvars(str(raw_url)) if raw_url else None
         # Bearer token from config — needed by authenticated MCP servers
         # like Home Assistant. None / empty string skips the header. #461.
-        token = cfg.get("token")
+        raw_token = cfg.get("token")
+        token = os.path.expandvars(str(raw_token)) if raw_token else None
+        verify_tls = cfg.get("verify_tls", True)
+        if not isinstance(verify_tls, bool):
+            raise TypeError(
+                f"MCP server {name!r} verify_tls must be a boolean"
+            )
         command = cfg.get("command", "")
         args = cfg.get("args", [])
 
         if url:
-            transport = StreamableHTTPTransport(url=url, token=token)
+            transport = StreamableHTTPTransport(
+                url=url,
+                token=token,
+                verify_tls=verify_tls,
+            )
         elif command:
             transport = StdioTransport(command=[command] + args)
         else:

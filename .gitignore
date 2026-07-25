@@ -67,6 +67,7 @@ site/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
 # Desktop
 desktop/node_modules/
@@ -105,6 +106,16 @@ src/openjarvis/channels/whatsapp_baileys_bridge/node_modules/
 
 # SQLite in-memory artifacts
 :memory:
+
+# JARVIS local voice/model artifacts
+/models/
+/.cache/
+/artifacts/audio/
+/recordings/
+/output/playwright/
+*.wav
+*.webm
+*.mp3
 
 # Dogfood reports (regenerated locally; not for VCS)
 dogfood_report*.md

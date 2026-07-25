@@ -237,6 +237,7 @@ class TestGetEngine:
                 "_anthropic_client",
                 "_google_client",
                 "_openrouter_client",
+                "_nvidia_client",
                 "_minimax_client",
                 "_deepseek_client",
                 "_codex_client",
