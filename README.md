@@ -1,11 +1,11 @@
-# JARVIS
+# Astrono Jarvis
 
 A voice-first, locally operated AI command console built on
 [OpenJarvis](https://github.com/open-jarvis/OpenJarvis).
 
 ![JARVIS console reference](design/jarvis-console-reference.png)
 
-JARVIS combines a Gemma 4 agent brain hosted through NVIDIA NIM, OpenAI's
+Astrono Jarvis combines a Gemma 4 agent brain hosted through NVIDIA NIM, OpenAI's
 open-source Whisper speech
 recognition, high-quality ElevenLabs speech, a local Kokoro voice fallback, and
 confirmation-gated MCP tools in one desktop-ready interface.
@@ -19,8 +19,9 @@ confirmation-gated MCP tools in one desktop-ready interface.
   ONNX model, with no wake-word API key or usage fee.
 - Acoustic echo cancellation plus hard wake-listener gating while JARVIS is
   listening, thinking, or speaking, preventing self-reactivation.
-- Automatic silence handoff through Silero VAD, with hold-Space and microphone
-  push-to-talk retained as a deterministic fallback.
+- Automatic silence handoff through a dedicated 16 kHz PCM Silero VAD stream,
+  with raw probability, input-level, and elapsed-silence diagnostics. Hold-Space
+  and microphone push-to-talk remain deterministic fallbacks.
 - Live hearing and thinking timers synchronized through backend WebSocket state
   transitions.
 - A full-screen React Three Fiber astronomy interface:
@@ -36,7 +37,7 @@ confirmation-gated MCP tools in one desktop-ready interface.
 - MCP tool safety classification: read operations can run directly; browser,
   filesystem, note, and other write-like operations require confirmation.
 - A live approval queue with approve and deny actions.
-- Typed-command fallback and a responsive red/black command-center UI.
+- Typed-command fallback and a responsive monochrome astronomical console.
 
 The ElevenLabs profile is intentionally an original, JARVIS-inspired delivery.
 It does not clone or claim to reproduce a film actor's voice.
@@ -189,6 +190,9 @@ wake_word_enabled = true
 wake_word_model = "hey jarvis"
 wake_word_threshold = 0.5
 wake_word_vad_threshold = 0.35
+vad_threshold = 0.5
+vad_min_speech_ms = 96
+vad_min_silence_ms = 1000
 ```
 
 ## Validation
@@ -200,6 +204,17 @@ cd frontend
 npm run build
 npm test
 ```
+
+To inspect the detector without Whisper, the agent, or TTS, run the standalone
+diagnostic against any supported audio file:
+
+```powershell
+uv run python scripts/diagnose_vad.py path\to\speech.wav
+```
+
+It prints every raw Silero probability, RMS input level, speech state, elapsed
+trailing silence, and the exact frame where the one-second stop condition is
+reached.
 
 ## Security and privacy
 

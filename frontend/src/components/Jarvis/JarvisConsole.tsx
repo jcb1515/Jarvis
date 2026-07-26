@@ -155,6 +155,12 @@ export function JarvisConsole() {
     if (isDemo) return;
     try {
       setApprovals(await fetchPendingApprovals());
+      setError((current) =>
+        current.startsWith('Failed:') ||
+        current.startsWith('Could not refresh')
+          ? ''
+          : current,
+      );
     } catch (caught) {
       const detail =
         caught instanceof Error
@@ -188,14 +194,41 @@ export function JarvisConsole() {
 
   useEffect(() => {
     if (isDemo) return;
-    void voice.enableWakeWord().catch((caught) => {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : 'Wake-word initialization failed.',
-      );
-    });
-  }, [isDemo, voice.enableWakeWord]);
+    let cancelled = false;
+    let retryTimer = 0;
+    const connectWakeWord = async (attempt: number): Promise<void> => {
+      try {
+        await voice.enableWakeWord();
+        if (!cancelled) {
+          setError((current) =>
+            current.startsWith('Wake connection:') ? '' : current,
+          );
+        }
+      } catch (caught) {
+        if (cancelled) return;
+        const detail =
+          caught instanceof Error
+            ? caught.message
+            : 'Wake-word initialization failed.';
+        const delayMs = Math.min(1000 * 2 ** attempt, 10000);
+        setError(`Wake connection: ${detail} Retrying automatically.`);
+        console.warn('Wake-word connection retry scheduled', {
+          attempt: attempt + 1,
+          delayMs,
+          error: detail,
+        });
+        retryTimer = window.setTimeout(
+          () => void connectWakeWord(attempt + 1),
+          delayMs,
+        );
+      }
+    };
+    void connectWakeWord(0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
+  }, [isDemo, voice.enableWakeWord, voice.wakeStatus]);
 
   useEffect(() => {
     if (stage !== 'READY' || voice.isSpeaking) {
@@ -492,9 +525,9 @@ export function JarvisConsole() {
 
       <header className="jarvis-header">
         <div className="jarvis-brand">
-          <img src="/jarvis-hud-mark.png" alt="" />
+          <img src="/astrono-black-hole.png" alt="" />
           <div>
-            <span>JARVIS</span>
+            <span>ASTRONO JARVIS</span>
             <small>ASTRONOMICAL INTELLIGENCE INTERFACE</small>
           </div>
         </div>
@@ -706,7 +739,9 @@ export function JarvisConsole() {
           </span>
           <span>WHISPER LOCAL</span>
           <span>
-            SILERO VAD {voice.vadActive ? 'SPEECH' : 'MONITORING'}
+            SILERO P {voice.vadProbability.toFixed(3)} ·{' '}
+            {voice.vadRmsDbfs.toFixed(1)} DB · {voice.vadSilenceMs} MS{' '}
+            {voice.vadActive ? 'SPEECH' : 'QUIET'}
           </span>
           <span>
             <ArrowClockwise size={13} /> ELEVENLABS → KOKORO

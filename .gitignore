@@ -113,6 +113,7 @@ src/openjarvis/channels/whatsapp_baileys_bridge/node_modules/
 /artifacts/audio/
 /recordings/
 /output/playwright/
+.playwright-cli/
 *.wav
 *.webm
 *.mp3

@@ -1,4 +1,3 @@
-import { Stars } from '@react-three/drei';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Bloom, EffectComposer } from '@react-three/postprocessing';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -33,6 +32,16 @@ interface ShaderUniforms {
   uTime: THREE.IUniform<number>;
 }
 
+interface StarLayerProps {
+  count: number;
+  depth: number;
+  drift: number;
+  pointSize: number;
+  radius: number;
+  reducedMotion: boolean;
+  seed: number;
+}
+
 const vertexShader = `
 varying vec2 vUv;
 varying vec3 vNormal;
@@ -65,21 +74,56 @@ float noise(vec2 p) {
 
 void main() {
   vec2 p = vUv - 0.5;
-  float radius = length(p) * 2.0;
-  if (radius > 1.0 || radius < 0.16) discard;
-  float angle = atan(p.y, p.x);
-  float spiral = sin(angle * 7.0 - uTime * 1.6 - radius * 19.0);
-  float filaments = noise(vec2(angle * 2.2 + uTime * 0.28, radius * 12.0));
-  float heat = smoothstep(1.0, 0.18, radius);
-  float structure = smoothstep(-0.55, 0.9, spiral + filaments * 1.25);
-  vec3 outerColor = vec3(0.08, 0.28, 0.58);
-  vec3 middleColor = vec3(0.95, 0.28, 0.07);
-  vec3 coreColor = vec3(1.0, 0.9, 0.58);
-  vec3 color = mix(outerColor, middleColor, heat);
-  color = mix(color, coreColor, pow(heat, 4.0) * structure);
-  color *= 0.45 + structure * 1.3 + uEnergy * 1.4;
-  float edge = smoothstep(1.0, 0.76, radius) * smoothstep(0.16, 0.24, radius);
-  float alpha = edge * (0.22 + structure * 0.78);
+  vec2 diskPoint = vec2(p.x, p.y * 4.7);
+  float radius = length(diskPoint) * 2.0;
+  if (radius > 1.0 || radius < 0.17) discard;
+
+  float angle = atan(diskPoint.y, diskPoint.x);
+  float bands = sin(radius * 78.0 - angle * 5.0 + uTime * 0.72);
+  float filaments = noise(vec2(angle * 4.0 - uTime * 0.18, radius * 36.0));
+  float structure = smoothstep(-0.72, 0.9, bands * 0.44 + filaments);
+  float innerHeat = pow(1.0 - smoothstep(0.17, 1.0, radius), 1.55);
+
+  float beamingDirection = -0.72 + sin(uTime * 0.16) * 0.16;
+  float facing = 0.5 + 0.5 * cos(angle - beamingDirection);
+  float beaming = mix(0.12, 2.45, pow(facing, 2.6));
+  float turbulentBeaming = beaming * mix(0.62, 1.22, structure);
+
+  vec3 deepRed = vec3(0.42, 0.015, 0.002);
+  vec3 orange = vec3(1.0, 0.19, 0.015);
+  vec3 warmWhite = vec3(1.0, 0.89, 0.59);
+  vec3 color = mix(deepRed, orange, smoothstep(0.02, 0.72, innerHeat));
+  color = mix(color, warmWhite, pow(innerHeat, 3.4) * (0.48 + structure * 0.52));
+  color *= turbulentBeaming * (0.72 + uEnergy * 1.8);
+
+  float outerFade = smoothstep(1.0, 0.78, radius);
+  float innerFade = smoothstep(0.17, 0.22, radius);
+  float verticalFade = smoothstep(0.11, 0.025, abs(p.y));
+  float alpha = outerFade * innerFade * verticalFade;
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+const lensingFragmentShader = `
+uniform float uTime;
+uniform float uEnergy;
+varying vec2 vUv;
+
+void main() {
+  vec2 p = vUv - 0.5;
+  vec2 lensPoint = vec2(p.x, p.y * 1.18);
+  float radius = length(lensPoint);
+  float ring = exp(-pow(abs(radius - 0.205) * 42.0, 1.35));
+  float polar = abs(p.y) / max(radius, 0.001);
+  float verticalArc = smoothstep(0.23, 0.67, polar);
+  float angle = atan(lensPoint.y, lensPoint.x);
+  float beaming = mix(0.18, 1.85, pow(0.5 + 0.5 * cos(angle + 0.7), 2.3));
+  float shimmer = 0.78 + sin(angle * 9.0 - uTime * 1.35) * 0.14;
+  shimmer += sin(angle * 3.0 - uTime * 0.72) * 0.08;
+  float heat = smoothstep(0.0, 0.8, beaming);
+  vec3 color = mix(vec3(0.8, 0.045, 0.003), vec3(1.0, 0.72, 0.3), heat);
+  float alpha = ring * verticalArc * beaming * shimmer * (0.5 + uEnergy * 0.9);
+  if (alpha < 0.008) discard;
   gl_FragColor = vec4(color, alpha);
 }
 `;
@@ -109,7 +153,7 @@ void main() {
   vec3 gold = vec3(1.0, 0.58, 0.04);
   vec3 whiteHot = vec3(1.0, 0.94, 0.62);
   vec3 color = mix(ember, gold, hot);
-  color = mix(color, whiteHot, pow(hot, 4.0) + uEnergy * 0.22);
+  color = mix(color, whiteHot, pow(hot, 4.0) + uEnergy * 0.35);
   color += vec3(1.0, 0.18, 0.02) * limb * 1.4;
   gl_FragColor = vec4(color, 1.0);
 }
@@ -122,20 +166,113 @@ varying vec3 vNormal;
 
 void main() {
   float fresnel = pow(1.0 - abs(dot(normalize(vNormal), vec3(0.0, 0.0, 1.0))), 2.4);
-  float pulse = 0.72 + sin(uTime * 1.7) * 0.08 + uEnergy * 0.45;
+  float pulse = 0.68 + sin(uTime * 1.7) * 0.06 + uEnergy * 0.78;
   vec3 color = mix(vec3(1.0, 0.12, 0.01), vec3(1.0, 0.68, 0.16), fresnel);
-  gl_FragColor = vec4(color * pulse, fresnel * 0.48);
+  gl_FragColor = vec4(color * pulse, fresnel * (0.38 + uEnergy * 0.42));
 }
 `;
 
-const getAudioEnergy = (frequencyData: Uint8Array | null): number => {
-  if (!frequencyData || frequencyData.length === 0) return 0;
-  const usefulBins = Math.max(1, Math.floor(frequencyData.length * 0.68));
-  let total = 0;
-  for (let index = 0; index < usefulBins; index += 1) {
-    total += frequencyData[index];
+const seededRandom = (state: number): [number, number] => {
+  const next = (state * 1664525 + 1013904223) >>> 0;
+  return [next / 4294967296, next];
+};
+
+const createStarGeometry = (
+  count: number,
+  radius: number,
+  depth: number,
+  seed: number,
+): THREE.BufferGeometry => {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const palette = [
+    new THREE.Color('#fffdf7'),
+    new THREE.Color('#f1f4ff'),
+    new THREE.Color('#fff0d6'),
+    new THREE.Color('#dfe8ff'),
+  ];
+  let randomState = seed;
+  for (let index = 0; index < count; index += 1) {
+    let randomValue = 0;
+    [randomValue, randomState] = seededRandom(randomState);
+    positions[index * 3] = (randomValue * 2 - 1) * radius;
+    [randomValue, randomState] = seededRandom(randomState);
+    positions[index * 3 + 1] = (randomValue * 2 - 1) * radius * 0.5;
+    [randomValue, randomState] = seededRandom(randomState);
+    positions[index * 3 + 2] = -2 - randomValue * depth;
+    [randomValue, randomState] = seededRandom(randomState);
+    const color = palette[Math.floor(randomValue * palette.length)];
+    [randomValue, randomState] = seededRandom(randomState);
+    const intensity = 0.32 + Math.pow(randomValue, 2.4) * 0.68;
+    colors[index * 3] = color.r * intensity;
+    colors[index * 3 + 1] = color.g * intensity;
+    colors[index * 3 + 2] = color.b * intensity;
   }
-  return total / usefulBins / 255;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geometry;
+};
+
+function StarLayer({
+  count,
+  depth,
+  drift,
+  pointSize,
+  radius,
+  reducedMotion,
+  seed,
+}: StarLayerProps) {
+  const groupRef = useRef<THREE.Group>(null);
+  const geometry = useMemo(
+    () => createStarGeometry(count, radius, depth, seed),
+    [count, depth, radius, seed],
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useFrame(({ clock }) => {
+    if (!groupRef.current) return;
+    groupRef.current.position.x = reducedMotion
+      ? 0
+      : -((clock.elapsedTime * drift) % (radius * 2));
+  });
+  return (
+    <group ref={groupRef}>
+      {[0, radius * 2].map((offset) => (
+        <points geometry={geometry} key={offset} position={[offset, 0, 0]}>
+          <pointsMaterial
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+            opacity={0.82}
+            size={pointSize}
+            sizeAttenuation
+            transparent
+            vertexColors
+          />
+        </points>
+      ))}
+    </group>
+  );
+}
+
+const getAudioLevel = (frequencyData: Uint8Array | null): number => {
+  if (!frequencyData || frequencyData.length === 0) return 0;
+  const usefulBins = Math.max(1, Math.floor(frequencyData.length * 0.48));
+  let total = 0;
+  let peak = 0;
+  for (let index = 0; index < usefulBins; index += 1) {
+    const value = frequencyData[index] / 255;
+    total += value * value;
+    peak = Math.max(peak, value);
+  }
+  const rootMeanSquare = Math.sqrt(total / usefulBins);
+  const combined = Math.max(rootMeanSquare * 1.55, peak * 0.78);
+  const normalized = THREE.MathUtils.clamp((combined - 0.018) / 0.42, 0, 1);
+  return Math.pow(normalized, 0.68);
+};
+
+const updateEnvelope = (current: number, target: number): number => {
+  const speed = target > current ? 0.58 : 0.105;
+  return current + (target - current) * speed;
 };
 
 const createUniforms = (): ShaderUniforms => ({
@@ -153,39 +290,67 @@ function BlackHole({
   const diskRef = useRef<THREE.Mesh>(null);
   const upperJetRef = useRef<THREE.Mesh>(null);
   const lowerJetRef = useRef<THREE.Mesh>(null);
+  const haloRef = useRef<THREE.Mesh>(null);
   const uniforms = useMemo(createUniforms, []);
-  const smoothedEnergyRef = useRef(0);
+  const energyRef = useRef(0);
+  const previousRawRef = useRef(0);
+  const rotationSpeedRef = useRef(0.2);
 
   useFrame(({ clock }, delta) => {
-    const frequencyEnergy =
-      stage === 'SPEAKING' ? getAudioEnergy(getFrequencyData()) : 0;
-    smoothedEnergyRef.current +=
-      (frequencyEnergy - smoothedEnergyRef.current) * 0.2;
-    const energy = smoothedEnergyRef.current;
-    const thinkingMultiplier = stage === 'THINKING' ? 3.2 : 1;
+    const raw = stage === 'SPEAKING' ? getAudioLevel(getFrequencyData()) : 0;
+    energyRef.current = updateEnvelope(energyRef.current, raw);
+    const transient = Math.max(0, raw - previousRawRef.current) * 1.8;
+    previousRawRef.current = raw;
+    const energy = THREE.MathUtils.clamp(energyRef.current + transient, 0, 1);
+    const targetRotationSpeed = stage === 'THINKING' ? 0.7 : 0.2;
+    rotationSpeedRef.current = THREE.MathUtils.damp(
+      rotationSpeedRef.current,
+      targetRotationSpeed,
+      2.2,
+      delta,
+    );
+    const animationMultiplier = rotationSpeedRef.current / 0.2;
     uniforms.uTime.value +=
-      delta * thinkingMultiplier * (reducedMotion ? 0.2 : 1);
+      delta * animationMultiplier * (reducedMotion ? 0.18 : 1);
     uniforms.uEnergy.value = energy;
-    if (diskRef.current) {
-      diskRef.current.rotation.z +=
-        delta * 0.07 * thinkingMultiplier * (reducedMotion ? 0 : 1);
+    if (diskRef.current && !reducedMotion) {
+      diskRef.current.rotation.z += delta * rotationSpeedRef.current;
     }
     if (groupRef.current) {
       groupRef.current.rotation.y =
-        Math.sin(clock.elapsedTime * 0.13) * (reducedMotion ? 0 : 0.08);
+        Math.sin(clock.elapsedTime * 0.12) * (reducedMotion ? 0 : 0.055);
+    }
+    if (haloRef.current) {
+      haloRef.current.scale.setScalar(1 + energy * 0.18);
+      const material = haloRef.current.material as THREE.MeshBasicMaterial;
+      material.opacity = 0.05 + energy * 0.38;
     }
     [upperJetRef.current, lowerJetRef.current].forEach((jet) => {
       if (!jet) return;
-      jet.scale.y = 0.18 + energy * 2.8;
+      jet.scale.x = 0.72 + energy * 1.45;
+      jet.scale.y = 0.08 + Math.pow(energy, 0.72) * 5.8;
+      jet.scale.z = 0.72 + energy * 1.45;
       const material = jet.material as THREE.MeshBasicMaterial;
-      material.opacity = stage === 'SPEAKING' ? 0.12 + energy * 0.78 : 0.03;
+      material.opacity = stage === 'SPEAKING' ? 0.025 + energy * 0.92 : 0.012;
     });
   });
 
   return (
-    <group ref={groupRef} visible={visible} position={[0, 0.18, 0]}>
-      <mesh ref={diskRef} rotation={[1.08, 0.08, 0]}>
-        <planeGeometry args={[6.8, 6.8, 1, 1]} />
+    <group ref={groupRef} visible={visible} position={[0, 0.2, 0]}>
+      <mesh position={[0, 0, -0.35]} scale={[1.28, 1, 1]}>
+        <planeGeometry args={[6.8, 6.8]} />
+        <shaderMaterial
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          fragmentShader={lensingFragmentShader}
+          side={THREE.DoubleSide}
+          transparent
+          uniforms={uniforms}
+          vertexShader={vertexShader}
+        />
+      </mesh>
+      <mesh ref={diskRef} position={[0, -0.04, -0.08]} rotation={[0, 0, -0.025]}>
+        <planeGeometry args={[7.2, 4.8]} />
         <shaderMaterial
           blending={THREE.AdditiveBlending}
           depthWrite={false}
@@ -196,41 +361,54 @@ function BlackHole({
           vertexShader={vertexShader}
         />
       </mesh>
-      <mesh scale={0.78}>
-        <sphereGeometry args={[1, 64, 64]} />
-        <meshBasicMaterial color="#000006" />
+      <mesh position={[0, 0, 0.18]} scale={[0.88, 0.88, 0.5]}>
+        <sphereGeometry args={[1, 72, 72]} />
+        <meshBasicMaterial color="#000000" />
       </mesh>
-      <mesh rotation={[Math.PI / 2, 0, 0]} scale={1.07}>
-        <torusGeometry args={[0.92, 0.035, 12, 160]} />
-        <meshBasicMaterial
+      <mesh position={[0, 0, 0.32]} scale={[1.28, 1, 1]}>
+        <planeGeometry args={[6.8, 6.8]} />
+        <shaderMaterial
           blending={THREE.AdditiveBlending}
-          color="#e7f4ff"
+          depthWrite={false}
+          fragmentShader={lensingFragmentShader}
+          side={THREE.DoubleSide}
           transparent
-          opacity={0.88}
+          uniforms={uniforms}
+          vertexShader={vertexShader}
         />
       </mesh>
-      <mesh ref={upperJetRef} position={[0, 2.15, -0.2]}>
-        <coneGeometry args={[0.22, 2.3, 24, 1, true]} />
+      <mesh ref={haloRef} position={[0, 0, 0.34]}>
+        <ringGeometry args={[0.9, 1.01, 128]} />
         <meshBasicMaterial
           blending={THREE.AdditiveBlending}
-          color="#7ad9ff"
+          color="#ffb15c"
           depthWrite={false}
-          opacity={0.03}
+          opacity={0.05}
+          transparent
+        />
+      </mesh>
+      <mesh ref={upperJetRef} position={[0, 1.42, -0.48]}>
+        <coneGeometry args={[0.19, 2.7, 32, 1, true]} />
+        <meshBasicMaterial
+          blending={THREE.AdditiveBlending}
+          color="#fff1cd"
+          depthWrite={false}
+          opacity={0.012}
           side={THREE.DoubleSide}
           transparent
         />
       </mesh>
       <mesh
         ref={lowerJetRef}
-        position={[0, -2.15, -0.2]}
+        position={[0, -1.42, -0.48]}
         rotation={[0, 0, Math.PI]}
       >
-        <coneGeometry args={[0.22, 2.3, 24, 1, true]} />
+        <coneGeometry args={[0.19, 2.7, 32, 1, true]} />
         <meshBasicMaterial
           blending={THREE.AdditiveBlending}
-          color="#557dff"
+          color="#ff6a1a"
           depthWrite={false}
-          opacity={0.03}
+          opacity={0.012}
           side={THREE.DoubleSide}
           transparent
         />
@@ -258,14 +436,15 @@ function SolarSystem({
   const flareRefs = useRef<Array<THREE.Mesh | null>>([]);
   const sunUniforms = useMemo(createUniforms, []);
   const coronaUniforms = useMemo(createUniforms, []);
-  const smoothedEnergyRef = useRef(0);
+  const energyRef = useRef(0);
+  const previousRawRef = useRef(0);
 
-  useFrame(({ clock }, delta) => {
-    const frequencyEnergy =
-      stage === 'SPEAKING' ? getAudioEnergy(getFrequencyData()) : 0;
-    smoothedEnergyRef.current +=
-      (frequencyEnergy - smoothedEnergyRef.current) * 0.18;
-    const energy = smoothedEnergyRef.current;
+  useFrame((_state, delta) => {
+    const raw = stage === 'SPEAKING' ? getAudioLevel(getFrequencyData()) : 0;
+    energyRef.current = updateEnvelope(energyRef.current, raw);
+    const transient = Math.max(0, raw - previousRawRef.current) * 1.65;
+    previousRawRef.current = raw;
+    const energy = THREE.MathUtils.clamp(energyRef.current + transient, 0, 1);
     const thinkingMultiplier = stage === 'THINKING' ? 3.4 : 1;
     const motionMultiplier = reducedMotion ? 0.08 : 1;
     sunUniforms.uTime.value += delta * thinkingMultiplier * motionMultiplier;
@@ -276,8 +455,7 @@ function SolarSystem({
       sunRef.current.rotation.y += delta * 0.08 * thinkingMultiplier;
     }
     if (coronaRef.current) {
-      const scale = 1.32 + energy * 0.14;
-      coronaRef.current.scale.setScalar(scale);
+      coronaRef.current.scale.setScalar(1.3 + energy * 0.38);
     }
     orbitRefs.current.forEach((orbit, index) => {
       if (!orbit) return;
@@ -287,14 +465,13 @@ function SolarSystem({
         thinkingMultiplier *
         motionMultiplier;
     });
-    flareRefs.current.forEach((flare, index) => {
+    flareRefs.current.forEach((flare) => {
       if (!flare) return;
-      const phase = Math.sin(clock.elapsedTime * 2.3 + index * 1.7) * 0.08;
       flare.scale.setScalar(
-        stage === 'SPEAKING' ? 0.82 + energy * 1.5 + phase : 0.55,
+        stage === 'SPEAKING' ? 0.18 + Math.pow(energy, 0.68) * 3.9 : 0.18,
       );
       const material = flare.material as THREE.MeshBasicMaterial;
-      material.opacity = stage === 'SPEAKING' ? 0.16 + energy * 0.72 : 0.04;
+      material.opacity = stage === 'SPEAKING' ? 0.025 + energy * 0.94 : 0.018;
     });
   });
 
@@ -330,11 +507,7 @@ function SolarSystem({
         >
           <mesh rotation={[Math.PI / 2, 0, 0]}>
             <torusGeometry args={[planet.distance, 0.006, 6, 160]} />
-            <meshBasicMaterial
-              color="#315779"
-              transparent
-              opacity={0.34}
-            />
+            <meshBasicMaterial color="#8f8f8f" transparent opacity={0.22} />
           </mesh>
           <mesh position={[planet.distance, 0, 0]}>
             <sphereGeometry args={[planet.radius, 32, 32]} />
@@ -364,7 +537,7 @@ function SolarSystem({
             blending={THREE.AdditiveBlending}
             color="#ff8c21"
             depthWrite={false}
-            opacity={0.04}
+            opacity={0.018}
             transparent
           />
         </mesh>
@@ -388,18 +561,37 @@ const useReducedMotion = (): boolean => {
 
 function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
   const reducedMotion = useReducedMotion();
+  const thinkingSpeed = stage === 'THINKING' ? 1.5 : 1;
   return (
     <>
-      <color attach="background" args={['#01030a']} />
-      <fog attach="fog" args={['#01030a', 10, 32]} />
-      <Stars
-        count={2200}
-        depth={52}
-        fade
-        factor={2.6}
-        radius={36}
-        saturation={0.32}
-        speed={reducedMotion ? 0 : stage === 'THINKING' ? 0.85 : 0.24}
+      <color attach="background" args={['#000000']} />
+      <fog attach="fog" args={['#000000', 14, 42]} />
+      <StarLayer
+        count={1550}
+        depth={46}
+        drift={0.12 * thinkingSpeed}
+        pointSize={0.028}
+        radius={42}
+        reducedMotion={reducedMotion}
+        seed={173}
+      />
+      <StarLayer
+        count={720}
+        depth={28}
+        drift={0.22 * thinkingSpeed}
+        pointSize={0.052}
+        radius={42}
+        reducedMotion={reducedMotion}
+        seed={941}
+      />
+      <StarLayer
+        count={170}
+        depth={16}
+        drift={0.36 * thinkingSpeed}
+        pointSize={0.092}
+        radius={42}
+        reducedMotion={reducedMotion}
+        seed={2026}
       />
       <ambientLight intensity={0.08} />
       <BlackHole
@@ -416,9 +608,9 @@ function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
       />
       <EffectComposer multisampling={0}>
         <Bloom
-          intensity={1.45}
-          luminanceThreshold={0.18}
-          luminanceSmoothing={0.7}
+          intensity={1.55}
+          luminanceThreshold={0.14}
+          luminanceSmoothing={0.72}
           mipmapBlur
         />
       </EffectComposer>

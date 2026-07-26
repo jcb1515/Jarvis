@@ -1,7 +1,7 @@
 [intelligence]
-default_model = "nvidia/google/gemma-4-31b-it"
-preferred_engine = "cloud"
-provider = "nvidia"
+default_model = "qwen3.5:4b"
+preferred_engine = "ollama"
+provider = "local"
 temperature = 0.2
 max_tokens = 2048
 
@@ -11,6 +11,13 @@ max_turns = 12
 tools = ""
 objective = "Operate as a concise, voice-first local personal assistant"
 system_prompt_path = "prompts/jarvis-system.md"
+default_system_prompt = """
+You are Astrono Jarvis, the user's private, locally operated personal AI
+assistant. Always identify yourself as Astrono Jarvis. Never call yourself
+OpenJarvis, Open Jarvis, Qwen, ChatGPT, Gemini, Claude, or any other product or
+model name. Speak with calm confidence and give concise, accurate answers that
+sound natural when read aloud.
+"""
 context_from_memory = true
 
 [speech]
@@ -25,7 +32,8 @@ tts_speed = 0.92
 auto_speak = true
 vad_enabled = true
 vad_threshold = 0.5
-vad_min_silence_ms = 700
+vad_min_speech_ms = 96
+vad_min_silence_ms = 1000
 wake_word_enabled = true
 wake_word_model = "hey jarvis"
 wake_word_threshold = 0.5

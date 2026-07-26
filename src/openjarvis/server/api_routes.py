@@ -998,23 +998,6 @@ async def stream_speech_transcription(websocket: WebSocket) -> None:
                     audio,
                     format="webm",
                 )
-                config = getattr(websocket.app.state, "config", None)
-                activity = None
-                if config is not None and config.speech.vad_enabled:
-                    from openjarvis.speech.silero_vad import SileroVADDetector
-
-                    detector = getattr(websocket.app.state, "silero_vad", None)
-                    if detector is None:
-                        detector = SileroVADDetector(
-                            threshold=config.speech.vad_threshold,
-                            min_silence_ms=config.speech.vad_min_silence_ms,
-                        )
-                        websocket.app.state.silero_vad = detector
-                    activity = await asyncio.to_thread(
-                        detector.detect,
-                        audio,
-                        "webm",
-                    )
                 await websocket.send_json(
                     {
                         "type": "partial",
@@ -1023,17 +1006,11 @@ async def stream_speech_transcription(websocket: WebSocket) -> None:
                             "language": result.language,
                             "confidence": result.confidence,
                             "duration_seconds": result.duration_seconds,
-                            "speech_active": (
-                                activity.active if activity is not None else None
-                            ),
-                            "trailing_silence_seconds": (
-                                activity.trailing_silence_seconds
-                                if activity is not None
-                                else None
-                            ),
                         },
                     }
                 )
+            except WebSocketDisconnect:
+                return
             except Exception as exc:
                 logger.exception("Streaming speech transcription failed")
                 await websocket.send_json(
@@ -1042,6 +1019,95 @@ async def stream_speech_transcription(websocket: WebSocket) -> None:
                         "detail": (
                             "Streaming Whisper transcription failed: "
                             f"backend={backend.backend_id!r}, error={exc}"
+                        ),
+                    }
+                )
+    except WebSocketDisconnect:
+        return
+
+
+@speech_router.websocket("/vad")
+async def stream_speech_activity(websocket: WebSocket) -> None:
+    """Stream raw Silero probabilities from mono 16 kHz signed-int16 PCM."""
+    from openjarvis.server.auth_middleware import websocket_authorized
+    from openjarvis.speech.silero_vad import (
+        SILERO_SAMPLE_RATE,
+        SILERO_WINDOW_SAMPLES,
+        SileroStreamingVAD,
+    )
+
+    expected_key = getattr(websocket.app.state, "api_key", "")
+    if not websocket_authorized(websocket, expected_key):
+        await websocket.close(code=1008)
+        return
+
+    config = getattr(websocket.app.state, "config", None)
+    speech_config = getattr(config, "speech", None)
+    if speech_config is None or not speech_config.vad_enabled:
+        await websocket.close(code=1011, reason="Silero VAD is disabled")
+        return
+
+    detector = SileroStreamingVAD(
+        threshold=speech_config.vad_threshold,
+        min_silence_ms=speech_config.vad_min_silence_ms,
+        min_speech_ms=speech_config.vad_min_speech_ms,
+    )
+    await websocket.accept()
+    await websocket.send_json(
+        {
+            "type": "vad_ready",
+            "sample_rate": SILERO_SAMPLE_RATE,
+            "window_samples": SILERO_WINDOW_SAMPLES,
+            "threshold": speech_config.vad_threshold,
+            "min_speech_ms": speech_config.vad_min_speech_ms,
+            "min_silence_ms": speech_config.vad_min_silence_ms,
+        }
+    )
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            audio = message.get("bytes")
+            if not audio:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": (
+                            "Expected non-empty mono 16 kHz signed-int16 PCM"
+                        ),
+                    }
+                )
+                continue
+            try:
+                activity = await asyncio.to_thread(detector.process, audio)
+                await websocket.send_json(
+                    {
+                        "type": "vad",
+                        "probability": activity.probability,
+                        "rms_dbfs": activity.rms_dbfs,
+                        "speech_active": activity.speech_active,
+                        "speech_observed": activity.speech_observed,
+                        "trailing_silence_ms": activity.trailing_silence_ms,
+                        "should_stop": activity.should_stop,
+                        "processed_samples": activity.processed_samples,
+                    }
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Streaming Silero VAD failed",
+                    extra={
+                        "pcm_bytes": len(audio),
+                        "sample_rate": SILERO_SAMPLE_RATE,
+                    },
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": (
+                            "Streaming Silero VAD failed: "
+                            f"sample_rate={SILERO_SAMPLE_RATE}, "
+                            f"pcm_bytes={len(audio)}, error={exc}"
                         ),
                     }
                 )

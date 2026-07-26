@@ -1,7 +1,7 @@
 [package]
 name = "openjarvis-desktop"
 version = "1.0.1"
-description = "OpenJarvis Desktop — Native AI assistant with energy monitoring, trace debugging, and learning visualization"
+description = "Astrono Jarvis Desktop — voice-first astronomical AI assistant"
 edition = "2021"
 license = "MIT"
 

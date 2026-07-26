@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createTranscriptionStream,
+  createVadStream,
   createWakeWordStream,
   openSpeechStream,
   transcribeAudio,
@@ -8,6 +9,7 @@ import {
 import type {
   JarvisRuntimeState,
   TranscriptionStream,
+  VadStream,
   WakeWordStream,
 } from '../../lib/api';
 
@@ -29,9 +31,9 @@ interface RecorderState {
   partialInFlight: boolean;
   stopped: boolean;
   transcriptionStream: TranscriptionStream;
+  vadStream: VadStream;
   autoStop: boolean;
   onSpeechEnd: () => void;
-  speechObserved: boolean;
   speechEndRequested: boolean;
 }
 
@@ -78,6 +80,17 @@ const stopStream = (stream: MediaStream): void => {
   stream.getTracks().forEach((track) => track.stop());
 };
 
+const disposeWakeMonitor = async (
+  monitor: WakeMonitorState,
+): Promise<void> => {
+  monitor.wakeStream.close();
+  monitor.worklet.disconnect();
+  monitor.source.disconnect();
+  monitor.mutedOutput.disconnect();
+  stopStream(monitor.stream);
+  await monitor.context.close();
+};
+
 export function useVoicePipeline() {
   const recorderRef = useRef<RecorderState | null>(null);
   const wakeMonitorRef = useRef<WakeMonitorState | null>(null);
@@ -91,6 +104,9 @@ export function useVoicePipeline() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceBackend, setVoiceBackend] = useState('standby');
   const [vadActive, setVadActive] = useState(false);
+  const [vadProbability, setVadProbability] = useState(0);
+  const [vadRmsDbfs, setVadRmsDbfs] = useState(-120);
+  const [vadSilenceMs, setVadSilenceMs] = useState(0);
   const [wakeStatus, setWakeStatus] = useState<WakeStatus>('OFF');
   const [wakeError, setWakeError] = useState('');
   const [wakeSequence, setWakeSequence] = useState(0);
@@ -152,6 +168,19 @@ export function useVoicePipeline() {
             });
           },
           (error) => {
+            const failedMonitor = wakeMonitorRef.current;
+            wakeMonitorRef.current = null;
+            if (failedMonitor) {
+              void disposeWakeMonitor(failedMonitor).catch((cleanupError) => {
+                const detail =
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : 'Unknown wake monitor cleanup error';
+                setWakeError(
+                  `${error.message} Cleanup also failed: ${detail}`,
+                );
+              });
+            }
             setWakeError(error.message);
             setWakeStatus('ERROR');
           },
@@ -170,14 +199,19 @@ export function useVoicePipeline() {
         worklet.port.addEventListener(
           'message',
           (event: MessageEvent<ArrayBuffer>) => {
-            if (wakePausedRef.current || !wakeMonitorRef.current) return;
             try {
+              const recorder = recorderRef.current;
+              if (recorder && !recorder.stopped) {
+                recorder.vadStream.sendFrame(event.data);
+                return;
+              }
+              if (wakePausedRef.current || !wakeMonitorRef.current) return;
               wakeMonitorRef.current.wakeStream.sendFrame(event.data);
             } catch (caught) {
               const error =
                 caught instanceof Error
                   ? caught
-                  : new Error('Could not send audio to the wake detector.');
+                  : new Error('Could not send PCM audio to local speech detection.');
               setWakeError(error.message);
               setWakeStatus('ERROR');
             }
@@ -258,32 +292,51 @@ export function useVoicePipeline() {
         (await navigator.mediaDevices.getUserMedia({
           audio: MICROPHONE_CONSTRAINTS,
         }));
-      let transcriptionStream: TranscriptionStream;
+      let transcriptionStream: TranscriptionStream | null = null;
+      let vadStream: VadStream | null = null;
       try {
         transcriptionStream = await createTranscriptionStream(
           (result) => {
             const text = result.text.trim();
             if (text) options.onPartialTranscript(text);
-            const speechActive = result.speech_active === true;
-            setVadActive(speechActive);
+          },
+          options.onPartialError,
+        );
+        vadStream = await createVadStream(
+          (event) => {
+            setVadActive(event.speech_active);
+            setVadProbability(event.probability);
+            setVadRmsDbfs(event.rms_dbfs);
+            setVadSilenceMs(event.trailing_silence_ms);
+            console.debug('JARVIS VAD', {
+              probability: event.probability,
+              rmsDbfs: event.rms_dbfs,
+              silenceMs: event.trailing_silence_ms,
+              speechActive: event.speech_active,
+              speechObserved: event.speech_observed,
+              shouldStop: event.should_stop,
+            });
             const state = recorderRef.current;
-            if (!state || !state.autoStop || state.speechEndRequested) return;
-            if (speechActive) state.speechObserved = true;
-            const trailingSilence = result.trailing_silence_seconds ?? 0;
             if (
-              state.speechObserved &&
-              !speechActive &&
-              trailingSilence >= 0.65
+              !state ||
+              !state.autoStop ||
+              state.speechEndRequested ||
+              !event.should_stop
             ) {
-              state.speechEndRequested = true;
-              window.queueMicrotask(state.onSpeechEnd);
+              return;
             }
+            state.speechEndRequested = true;
+            window.queueMicrotask(state.onSpeechEnd);
           },
           options.onPartialError,
         );
       } catch (caught) {
+        transcriptionStream?.close();
         if (!monitor) stopStream(stream);
         throw caught;
+      }
+      if (!transcriptionStream || !vadStream) {
+        throw new Error('Local speech streams did not initialize.');
       }
 
       const context = monitor?.context ?? new AudioContext();
@@ -312,9 +365,9 @@ export function useVoicePipeline() {
         partialInFlight: false,
         stopped: false,
         transcriptionStream,
+        vadStream,
         autoStop: options.autoStop,
         onSpeechEnd: options.onSpeechEnd,
-        speechObserved: false,
         speechEndRequested: false,
       };
       state.partialTimer = window.setInterval(async () => {
@@ -353,6 +406,7 @@ export function useVoicePipeline() {
     state.stopped = true;
     window.clearInterval(state.partialTimer);
     state.transcriptionStream.close();
+    state.vadStream.close();
     const stopped = new Promise<void>((resolve) => {
       state.recorder.addEventListener('stop', () => resolve(), { once: true });
     });
@@ -368,6 +422,9 @@ export function useVoicePipeline() {
     recorderRef.current = null;
     setIsListening(false);
     setVadActive(false);
+    setVadProbability(0);
+    setVadRmsDbfs(-120);
+    setVadSilenceMs(0);
     if (audio.size === 0) {
       throw new Error('The microphone recording was empty.');
     }
@@ -466,6 +523,7 @@ export function useVoicePipeline() {
       if (recorder) {
         window.clearInterval(recorder.partialTimer);
         recorder.transcriptionStream.close();
+        recorder.vadStream.close();
         if (recorder.ownsAudioResources) {
           stopStream(recorder.stream);
           void recorder.context.close();
@@ -473,12 +531,8 @@ export function useVoicePipeline() {
       }
       const monitor = wakeMonitorRef.current;
       if (monitor) {
-        monitor.wakeStream.close();
-        monitor.worklet.disconnect();
-        monitor.source.disconnect();
-        monitor.mutedOutput.disconnect();
-        stopStream(monitor.stream);
-        void monitor.context.close();
+        wakeMonitorRef.current = null;
+        void disposeWakeMonitor(monitor);
       }
       void outputContextRef.current?.close();
     },
@@ -498,6 +552,9 @@ export function useVoicePipeline() {
     stopListening,
     transitionState,
     vadActive,
+    vadProbability,
+    vadRmsDbfs,
+    vadSilenceMs,
     voiceBackend,
     wakeError,
     wakeScore,

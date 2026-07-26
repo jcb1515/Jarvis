@@ -43,10 +43,8 @@ export default function App() {
   const optInDisplayName = useAppStore((s) => s.optInDisplayName);
   const optInEmail = useAppStore((s) => s.optInEmail);
   const optInAnonId = useAppStore((s) => s.optInAnonId);
-  const optInModalSeen = useAppStore((s) => s.optInModalSeen);
   const optInModalOpen = useAppStore((s) => s.optInModalOpen);
   const setOptInModalOpen = useAppStore((s) => s.setOptInModalOpen);
-  const markOptInModalSeen = useAppStore((s) => s.markOptInModalSeen);
   const savings = useAppStore((s) => s.savings);
 
   // Apply theme class to <html>
@@ -133,15 +131,6 @@ export default function App() {
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
   }, [optInEnabled, optInDisplayName, optInAnonId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Show opt-in modal on first visit
-  useEffect(() => {
-    if (isDemo) return;
-    if (!optInModalSeen) {
-      setOptInModalOpen(true);
-      markOptInModalSeen();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fire model_changed when the user switches models. First mount is
   // not a "change" — only emit when both prev and current are real and

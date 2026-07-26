@@ -1453,7 +1453,8 @@ class SpeechConfig:
     auto_speak: bool = True
     vad_enabled: bool = True
     vad_threshold: float = 0.5
-    vad_min_silence_ms: int = 700
+    vad_min_speech_ms: int = 96
+    vad_min_silence_ms: int = 1000
     wake_word_enabled: bool = True
     wake_word_model: str = "hey jarvis"
     wake_word_threshold: float = 0.5

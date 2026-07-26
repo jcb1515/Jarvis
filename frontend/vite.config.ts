@@ -19,11 +19,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'OpenJarvis',
-        short_name: 'Jarvis',
-        description: 'On-device AI assistant',
-        theme_color: '#161618',
-        background_color: '#161618',
+        name: 'Astrono Jarvis',
+        short_name: 'Astrono',
+        description: 'Local astronomical AI assistant',
+        theme_color: '#000000',
+        background_color: '#000000',
         display: 'standalone',
         icons: [
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },

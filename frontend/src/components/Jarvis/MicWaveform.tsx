@@ -18,11 +18,11 @@ const drawWaveform = (
   const gap = 3;
   const barWidth = Math.max(2, (width - gap * (barCount - 1)) / barCount);
   const gradient = context.createLinearGradient(0, height, width, 0);
-  gradient.addColorStop(0, '#2c6b9d');
-  gradient.addColorStop(0.48, '#75d7ff');
-  gradient.addColorStop(1, '#d5f6ff');
+  gradient.addColorStop(0, '#777777');
+  gradient.addColorStop(0.48, '#d4d4d4');
+  gradient.addColorStop(1, '#ffffff');
   context.fillStyle = gradient;
-  context.shadowColor = '#51cfff';
+  context.shadowColor = '#ffffff';
   context.shadowBlur = active ? 12 : 4;
 
   for (let index = 0; index < barCount; index += 1) {

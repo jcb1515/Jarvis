@@ -452,6 +452,69 @@ export async function createTranscriptionStream(
   };
 }
 
+export interface VadEvent {
+  type: 'vad';
+  probability: number;
+  rms_dbfs: number;
+  speech_active: boolean;
+  speech_observed: boolean;
+  trailing_silence_ms: number;
+  should_stop: boolean;
+  processed_samples: number;
+}
+
+export interface VadStream {
+  close: () => void;
+  sendFrame: (frame: ArrayBuffer) => void;
+}
+
+export async function createVadStream(
+  onEvent: (event: VadEvent) => void,
+  onError: (error: Error) => void,
+): Promise<VadStream> {
+  const socket = new WebSocket(getSpeechWebSocketUrl('/v1/speech/vad'));
+  socket.binaryType = 'arraybuffer';
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener(
+      'error',
+      () => reject(new Error('Could not open the local Silero VAD stream.')),
+      { once: true },
+    );
+  });
+  socket.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(String(event.data)) as
+        | VadEvent
+        | { type: 'vad_ready' }
+        | { type: 'error'; detail?: string };
+      if (payload.type === 'vad') {
+        onEvent(payload);
+      } else if (payload.type === 'error') {
+        onError(new Error(payload.detail || 'The Silero VAD stream failed.'));
+      }
+    } catch (caught) {
+      onError(
+        caught instanceof Error
+          ? caught
+          : new Error('The Silero VAD stream returned invalid data.'),
+      );
+    }
+  });
+  socket.addEventListener('error', () => {
+    onError(new Error('The local Silero VAD WebSocket disconnected.'));
+  });
+  return {
+    close: () => socket.close(1000, 'vad-monitor-complete'),
+    sendFrame: (frame: ArrayBuffer) => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        throw new Error('The local Silero VAD stream is not open.');
+      }
+      socket.send(frame);
+    },
+  };
+}
+
 export type JarvisRuntimeState =
   | 'READY'
   | 'HEARING'
