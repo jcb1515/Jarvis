@@ -393,9 +393,9 @@ export interface TranscriptionStream {
   send: (audio: Blob) => void;
 }
 
-const getWebSocketBase = (): URL => {
+const getSpeechWebSocketUrl = (path: string): URL => {
   const httpBase = getBase() || window.location.origin;
-  const url = new URL('/v1/speech/stream', httpBase);
+  const url = new URL(path, httpBase);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   const key = getApiKey();
   if (key) url.searchParams.set('token', key);
@@ -406,7 +406,7 @@ export async function createTranscriptionStream(
   onPartial: (result: TranscriptionResult) => void,
   onError: (error: Error) => void,
 ): Promise<TranscriptionStream> {
-  const socket = new WebSocket(getWebSocketBase());
+  const socket = new WebSocket(getSpeechWebSocketUrl('/v1/speech/stream'));
   socket.binaryType = 'arraybuffer';
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener('open', () => resolve(), { once: true });
@@ -449,6 +449,99 @@ export async function createTranscriptionStream(
       }
       socket.send(audio);
     },
+  };
+}
+
+export type JarvisRuntimeState =
+  | 'READY'
+  | 'HEARING'
+  | 'THINKING'
+  | 'RESPONDING'
+  | 'SPEAKING'
+  | 'ERROR';
+
+export type WakeWordEvent =
+  | { type: 'wake_loading'; phrase: string }
+  | { type: 'wake_ready'; phrase: string }
+  | {
+      type: 'wake_detected';
+      phrase: string;
+      score: number;
+      detected_at_ms: number;
+    }
+  | {
+      type: 'state_transition';
+      state: JarvisRuntimeState;
+      started_at_ms: number;
+    };
+
+export interface WakeWordStream {
+  close: () => void;
+  reset: () => void;
+  sendFrame: (frame: ArrayBuffer) => void;
+  transition: (state: JarvisRuntimeState) => void;
+}
+
+export async function createWakeWordStream(
+  onEvent: (event: WakeWordEvent) => void,
+  onError: (error: Error) => void,
+): Promise<WakeWordStream> {
+  const socket = new WebSocket(getSpeechWebSocketUrl('/v1/speech/wake'));
+  socket.binaryType = 'arraybuffer';
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener(
+      'error',
+      () => reject(new Error('Could not open the local wake-word stream.')),
+      { once: true },
+    );
+  });
+  socket.addEventListener('message', (event) => {
+    try {
+      const payload = JSON.parse(String(event.data)) as
+        | WakeWordEvent
+        | { type: 'error'; detail?: string };
+      if (payload.type === 'error') {
+        onError(
+          new Error(payload.detail || 'The local wake-word detector failed.'),
+        );
+        return;
+      }
+      onEvent(payload);
+    } catch (caught) {
+      onError(
+        caught instanceof Error
+          ? caught
+          : new Error('The wake-word stream returned invalid data.'),
+      );
+    }
+  });
+  socket.addEventListener('error', () => {
+    onError(new Error('The local wake-word WebSocket disconnected.'));
+  });
+
+  const sendControl = (
+    payload:
+      | { type: 'reset' }
+      | { type: 'state_transition'; state: JarvisRuntimeState },
+  ): void => {
+    if (socket.readyState !== WebSocket.OPEN) {
+      throw new Error('The local wake-word stream is not open.');
+    }
+    socket.send(JSON.stringify(payload));
+  };
+
+  return {
+    close: () => socket.close(1000, 'wake-monitor-complete'),
+    reset: () => sendControl({ type: 'reset' }),
+    sendFrame: (frame: ArrayBuffer) => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        throw new Error('The local wake-word stream is not open.');
+      }
+      socket.send(frame);
+    },
+    transition: (state: JarvisRuntimeState) =>
+      sendControl({ type: 'state_transition', state }),
   };
 }
 

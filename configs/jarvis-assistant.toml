@@ -26,6 +26,11 @@ auto_speak = true
 vad_enabled = true
 vad_threshold = 0.5
 vad_min_silence_ms = 700
+wake_word_enabled = true
+wake_word_model = "hey jarvis"
+wake_word_threshold = 0.5
+wake_word_vad_threshold = 0.35
+wake_word_cooldown_ms = 1200
 
 [tools.mcp]
 enabled = true

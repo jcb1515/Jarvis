@@ -1,5 +1,6 @@
 """Tests for speech API endpoints."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -137,3 +138,67 @@ def test_health_no_backend():
     assert response.status_code == 200
     data = response.json()
     assert data["available"] is False
+
+
+def test_wake_stream_detects_phrase_and_records_transitions():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openjarvis.server.api_routes import speech_router
+    from openjarvis.speech.wake_word import WakeWordPrediction
+
+    app = FastAPI()
+    app.state.api_key = ""
+    app.state.config = SimpleNamespace(
+        speech=SimpleNamespace(
+            wake_word_enabled=True,
+            wake_word_model="hey jarvis",
+            wake_word_threshold=0.5,
+            wake_word_vad_threshold=0.35,
+            wake_word_cooldown_ms=1200,
+        )
+    )
+    app.include_router(speech_router)
+
+    with patch(
+        "openjarvis.speech.wake_word.OpenWakeWordDetector"
+    ) as detector_class:
+        detector = detector_class.return_value
+        detector.predict.return_value = WakeWordPrediction(
+            detected=True,
+            score=0.91,
+        )
+        with TestClient(app).websocket_connect("/v1/speech/wake") as socket:
+            loading = socket.receive_json()
+            ready = socket.receive_json()
+            initial = socket.receive_json()
+            assert loading == {
+                "type": "wake_loading",
+                "phrase": "hey jarvis",
+            }
+            assert ready == {
+                "type": "wake_ready",
+                "phrase": "hey jarvis",
+            }
+            assert initial["type"] == "state_transition"
+            assert initial["state"] == "READY"
+
+            socket.send_bytes(bytes(1280 * 2))
+            detected = socket.receive_json()
+            hearing = socket.receive_json()
+            assert detected["type"] == "wake_detected"
+            assert detected["phrase"] == "hey jarvis"
+            assert detected["score"] == 0.91
+            assert hearing["type"] == "state_transition"
+            assert hearing["state"] == "HEARING"
+
+            socket.send_json(
+                {"type": "state_transition", "state": "THINKING"}
+            )
+            thinking = socket.receive_json()
+            assert thinking["type"] == "state_transition"
+            assert thinking["state"] == "THINKING"
+
+    detector.prepare.assert_called_once_with()
+    detector.predict.assert_called_once_with(bytes(1280 * 2))
+    detector.reset.assert_called_once_with()

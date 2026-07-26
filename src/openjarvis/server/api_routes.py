@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -1044,6 +1045,186 @@ async def stream_speech_transcription(websocket: WebSocket) -> None:
                         ),
                     }
                 )
+    except WebSocketDisconnect:
+        return
+
+
+@speech_router.websocket("/wake")
+async def stream_wake_word(websocket: WebSocket) -> None:
+    """Detect the configured wake phrase from streamed 16 kHz PCM audio."""
+    from openjarvis.server.auth_middleware import websocket_authorized
+    from openjarvis.speech.wake_word import OpenWakeWordDetector
+
+    expected_key = getattr(websocket.app.state, "api_key", "")
+    if not websocket_authorized(websocket, expected_key):
+        await websocket.close(code=1008)
+        return
+
+    config = getattr(websocket.app.state, "config", None)
+    speech_config = getattr(config, "speech", None)
+    if speech_config is None or not speech_config.wake_word_enabled:
+        await websocket.close(code=1011, reason="Wake-word detection is disabled")
+        return
+
+    detector = OpenWakeWordDetector(
+        model_name=speech_config.wake_word_model,
+        threshold=speech_config.wake_word_threshold,
+        vad_threshold=speech_config.wake_word_vad_threshold,
+    )
+    current_state = "READY"
+    state_started_at_ms = int(time.time() * 1000)
+    last_detection_at_ms = 0
+
+    async def send_transition(state: str) -> None:
+        nonlocal current_state, state_started_at_ms
+        current_state = state
+        state_started_at_ms = int(time.time() * 1000)
+        await websocket.send_json(
+            {
+                "type": "state_transition",
+                "state": current_state,
+                "started_at_ms": state_started_at_ms,
+            }
+        )
+
+    await websocket.accept()
+    await websocket.send_json(
+        {
+            "type": "wake_loading",
+            "phrase": speech_config.wake_word_model,
+        }
+    )
+    try:
+        await asyncio.to_thread(detector.prepare)
+    except Exception as exc:
+        logger.exception(
+            "Wake-word model initialization failed",
+            extra={"model": speech_config.wake_word_model},
+        )
+        await websocket.send_json(
+            {
+                "type": "error",
+                "detail": (
+                    "Wake-word model initialization failed: "
+                    f"model={speech_config.wake_word_model!r}, error={exc}"
+                ),
+            }
+        )
+        await websocket.close(code=1011, reason="Wake-word model unavailable")
+        return
+    await websocket.send_json(
+        {
+            "type": "wake_ready",
+            "phrase": speech_config.wake_word_model,
+        }
+    )
+    await send_transition("READY")
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            text_message = message.get("text")
+            if text_message is not None:
+                try:
+                    control = json.loads(text_message)
+                except json.JSONDecodeError as exc:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "detail": (
+                                "Wake-word control message was not valid JSON: "
+                                f"error={exc}"
+                            ),
+                        }
+                    )
+                    continue
+                control_type = control.get("type")
+                if control_type == "reset":
+                    await asyncio.to_thread(detector.reset)
+                    continue
+                if control_type == "state_transition":
+                    requested_state = str(control.get("state", "")).upper()
+                    allowed_states = {
+                        "READY",
+                        "HEARING",
+                        "THINKING",
+                        "RESPONDING",
+                        "SPEAKING",
+                        "ERROR",
+                    }
+                    if requested_state not in allowed_states:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "detail": (
+                                    "Unsupported JARVIS state transition: "
+                                    f"state={requested_state!r}"
+                                ),
+                            }
+                        )
+                        continue
+                    await send_transition(requested_state)
+                    continue
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": (
+                            "Unsupported wake-word control message: "
+                            f"type={control_type!r}"
+                        ),
+                    }
+                )
+                continue
+
+            audio = message.get("bytes")
+            if not audio:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": "Expected a non-empty int16 PCM audio frame",
+                    }
+                )
+                continue
+            try:
+                prediction = await asyncio.to_thread(detector.predict, audio)
+            except Exception as exc:
+                logger.exception(
+                    "Wake-word inference failed",
+                    extra={
+                        "model": speech_config.wake_word_model,
+                        "audio_bytes": len(audio),
+                    },
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": (
+                            "Wake-word inference failed: "
+                            f"model={speech_config.wake_word_model!r}, error={exc}"
+                        ),
+                    }
+                )
+                continue
+
+            now_ms = int(time.time() * 1000)
+            cooldown_elapsed = (
+                now_ms - last_detection_at_ms
+                >= speech_config.wake_word_cooldown_ms
+            )
+            if prediction.detected and cooldown_elapsed:
+                last_detection_at_ms = now_ms
+                await asyncio.to_thread(detector.reset)
+                await websocket.send_json(
+                    {
+                        "type": "wake_detected",
+                        "phrase": speech_config.wake_word_model,
+                        "score": prediction.score,
+                        "detected_at_ms": now_ms,
+                    }
+                )
+                await send_transition("HEARING")
     except WebSocketDisconnect:
         return
 

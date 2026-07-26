@@ -15,11 +15,19 @@ confirmation-gated MCP tools in one desktop-ready interface.
 - Hold-to-talk microphone capture with `Space` or the on-screen control.
 - Local transcription through the official
   [openai/whisper](https://github.com/openai/whisper) repository.
-- Partial transcripts sent over one local WebSocket every 1.8 seconds, followed
-  by a finalized transcript when push-to-talk is released.
-- Two real Web Audio visualizers:
-  - the small ring reads live microphone frequency data;
-  - the central ring reads the synthesized assistant audio.
+- Always-on local "Hey Jarvis" activation through openWakeWord's pretrained
+  ONNX model, with no wake-word API key or usage fee.
+- Acoustic echo cancellation plus hard wake-listener gating while JARVIS is
+  listening, thinking, or speaking, preventing self-reactivation.
+- Automatic silence handoff through Silero VAD, with hold-Space and microphone
+  push-to-talk retained as a deterministic fallback.
+- Live hearing and thinking timers synchronized through backend WebSocket state
+  transitions.
+- A full-screen React Three Fiber astronomy interface:
+  - persistent depth-aware starfield;
+  - separate live microphone spectrum bar;
+  - shader-driven black-hole and solar-system modes;
+  - thinking-speed animation and speech-reactive jets or solar flares.
 - Streaming OpenJarvis agent and tool events.
 - Immediate ElevenLabs audio streaming to browser playback when configured.
 - ElevenLabs voice selection tuned toward a calm, articulate British
@@ -100,8 +108,20 @@ cd frontend
 npm run dev
 ```
 
-Open `http://localhost:5173`. Hold `Space`, speak, and release to transcribe and
-send. You can also type a command in the bottom field.
+On Windows, the project launcher starts both services in hidden processes and
+opens the interface in regular Google Chrome:
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+Open `http://localhost:5173` and allow microphone access. The first connection
+downloads and caches openWakeWord's pretrained "Hey Jarvis" model. Once the
+header reads `WAKE ARMED`, say "Hey Jarvis", wait for the cue, speak naturally,
+and pause; Silero VAD finalizes the command automatically.
+
+Hold `Space` or hold the `MANUAL FALLBACK` control when ambient sound makes the
+wake phrase unreliable. You can also type a command in the bottom field.
 
 The first Whisper transcription can take longer because the selected model must
 be downloaded and loaded. Change `speech.model` in the config:
@@ -165,6 +185,10 @@ device = "auto"
 tts_backend = "auto"
 tts_speed = 0.92
 auto_speak = true
+wake_word_enabled = true
+wake_word_model = "hey jarvis"
+wake_word_threshold = 0.5
+wake_word_vad_threshold = 0.35
 ```
 
 ## Validation
@@ -180,6 +204,9 @@ npm test
 ## Security and privacy
 
 - Whisper transcription stays on the machine.
+- Wake-word audio stays on the machine and is processed by openWakeWord through
+  ONNX Runtime. Continuous microphone audio is not sent to NVIDIA or
+  ElevenLabs.
 - Ollama/local-model prompts stay on the machine.
 - Text sent to ElevenLabs leaves the machine when that backend is enabled.
 - MCP write-like tools are confirmation-gated.

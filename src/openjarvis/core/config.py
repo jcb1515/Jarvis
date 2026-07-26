@@ -1454,6 +1454,11 @@ class SpeechConfig:
     vad_enabled: bool = True
     vad_threshold: float = 0.5
     vad_min_silence_ms: int = 700
+    wake_word_enabled: bool = True
+    wake_word_model: str = "hey jarvis"
+    wake_word_threshold: float = 0.5
+    wake_word_vad_threshold: float = 0.35
+    wake_word_cooldown_ms: int = 1200
 
 
 @dataclass(slots=True)

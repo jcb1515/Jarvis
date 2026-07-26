@@ -93,6 +93,7 @@ desktop = [
     "openai-whisper @ git+https://github.com/openai/whisper.git@04f449b8a437f1bbd3dba5c9f826aca972e7709a",
     "imageio-ffmpeg>=0.6.0,<0.7",
     "silero-vad>=6.2.1",
+    "openwakeword>=0.6.0,<0.7",
     "kokoro>=0.9.4",
     "soundfile>=0.12",
 ]
@@ -137,6 +138,7 @@ speech = [
     "openai-whisper @ git+https://github.com/openai/whisper.git@04f449b8a437f1bbd3dba5c9f826aca972e7709a",
     "imageio-ffmpeg>=0.6.0,<0.7",
     "silero-vad>=6.2.1",
+    "openwakeword>=0.6.0,<0.7",
 ]
 speech-faster = ["faster-whisper>=1.0"]
 voice = ["kokoro>=0.9.4", "soundfile>=0.12"]
