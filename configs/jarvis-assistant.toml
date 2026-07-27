@@ -6,7 +6,7 @@ temperature = 0.2
 max_tokens = 2048
 
 [agent]
-default_agent = "native_openhands"
+default_agent = "simple"
 max_turns = 12
 tools = ""
 objective = "Operate as a concise, voice-first local personal assistant"
@@ -21,11 +21,11 @@ sound natural when read aloud.
 context_from_memory = true
 
 [speech]
-backend = "whisper"
-model = "base"
-language = ""
-device = "auto"
-compute_type = "float16"
+backend = "faster-whisper"
+model = "small"
+language = "en"
+device = "cpu"
+compute_type = "int8"
 tts_backend = "auto"
 tts_voice = ""
 tts_speed = 0.92
@@ -68,7 +68,7 @@ servers = """
 [server]
 host = "127.0.0.1"
 port = 8000
-agent = "native_openhands"
+agent = "simple"
 
 [security]
 profile = "personal"

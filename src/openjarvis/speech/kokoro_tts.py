@@ -32,10 +32,15 @@ class KokoroTTSBackend(TTSBackend):
             from kokoro import KPipeline
 
             self._pipeline = KPipeline(lang_code="a")
-        except ImportError:
+        except ImportError as exc:
             raise RuntimeError(
                 "kokoro package not installed. Install with: pip install kokoro"
-            )
+            ) from exc
+        except SystemExit as exc:
+            raise RuntimeError(
+                "Kokoro could not initialize its English language pipeline. "
+                "Install the spaCy model en_core_web_sm in the project environment."
+            ) from exc
 
     def synthesize(
         self,

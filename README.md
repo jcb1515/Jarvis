@@ -5,20 +5,22 @@ A voice-first, locally operated AI command console built on
 
 ![JARVIS console reference](design/jarvis-console-reference.png)
 
-Astrono Jarvis combines a Gemma 4 agent brain hosted through NVIDIA NIM, OpenAI's
-open-source Whisper speech
-recognition, high-quality ElevenLabs speech, a local Kokoro voice fallback, and
-confirmation-gated MCP tools in one desktop-ready interface.
+Astrono Jarvis combines a local Qwen 3.5 agent through Ollama, optimized local
+Whisper speech recognition, high-quality ElevenLabs speech, a local Kokoro voice
+fallback, and confirmation-gated MCP tools in one desktop-ready interface.
 
 ## What is implemented
 
 - Hold-to-talk microphone capture with `Space` or the on-screen control.
-- Local transcription through the official
-  [openai/whisper](https://github.com/openai/whisper) repository.
+- Local transcription through `faster-whisper` using the `small` English model
+  with CPU `int8` inference. The official
+  [openai/whisper](https://github.com/openai/whisper) backend remains available.
 - Always-on local "Hey Jarvis" activation through openWakeWord's pretrained
   ONNX model, with no wake-word API key or usage fee.
 - Acoustic echo cancellation plus hard wake-listener gating while JARVIS is
   listening, thinking, or speaking, preventing self-reactivation.
+- A 12-second post-response conversation window that accepts a follow-up
+  without repeating "Hey Jarvis", then returns to the normal wake-word state.
 - Automatic silence handoff through a dedicated 16 kHz PCM Silero VAD stream,
   with raw probability, input-level, and elapsed-silence diagnostics. Hold-Space
   and microphone push-to-talk remain deterministic fallbacks.
@@ -27,10 +29,21 @@ confirmation-gated MCP tools in one desktop-ready interface.
 - A full-screen React Three Fiber astronomy interface:
   - persistent depth-aware starfield;
   - separate live microphone spectrum bar;
-  - shader-driven black-hole and solar-system modes;
-  - thinking-speed animation and speech-reactive jets or solar flares.
+  - shader-driven black-hole and solar-system modes, including differential
+    accretion flow with faster inner material and layered plasma turbulence;
+  - a continuously replenishing gravity field that spirals stars into the
+    black hole in every assistant state;
+  - a smoothly accelerated capture rate while the single THINKING phase is
+    active;
+  - a damped visual crossfade from the faster thinking disk into
+    audio-reactive speaking jets;
+  - speech-reactive outward jets or solar flares.
+- A unified phase label such as `THINKING, 1.2s`, keeping state and elapsed
+  time on one synchronized line.
 - Streaming OpenJarvis agent and tool events.
-- Immediate ElevenLabs audio streaming to browser playback when configured.
+- Immediate ElevenLabs audio streaming with native playback-state events,
+  explicit Web Audio context resume checks, and progress-based stall recovery
+  that does not truncate healthy long responses.
 - ElevenLabs voice selection tuned toward a calm, articulate British
   AI-assistant character.
 - Automatic local Kokoro TTS fallback when ElevenLabs is unavailable.
@@ -48,45 +61,44 @@ It does not clone or claim to reproduce a film actor's voice.
 - Python 3.10–3.13
 - Node.js 20+
 - [uv](https://docs.astral.sh/uv/)
-- An NVIDIA API key for the configured hosted Gemma 4 agent brain
+- [Ollama](https://ollama.com/) with the configured `qwen3.5:4b` model
 - No system FFmpeg install is required; the speech extra installs a
   project-local FFmpeg binary through `imageio-ffmpeg`.
 
-An NVIDIA GPU is optional. Whisper uses CUDA when available and otherwise runs
-on CPU.
+An NVIDIA GPU and hosted language-model API key are not required. The default
+Whisper configuration runs on CPU.
 
 ## Setup
 
 ```powershell
 git clone https://github.com/jcb1515/Jarvis.git
 cd Jarvis
-uv sync --extra desktop
+uv sync --extra desktop --extra speech-faster
+uv pip install --python .venv/Scripts/python.exe https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 Copy-Item .env.example .env
 Copy-Item configs/jarvis-assistant.toml "$HOME/.openjarvis/config.toml"
+ollama pull qwen3.5:4b
 cd frontend
 npm install
 ```
 
-`uv sync --extra desktop` installs Whisper directly from the pinned official
-GitHub revision in `pyproject.toml`, along with a project-local FFmpeg runtime
-for WAV, MP3, and browser WebM decoding. No transcription API key or per-minute
-fee is required. The configured Whisper model is downloaded once on first use
-and cached locally.
+The desktop extra installs Whisper directly from the pinned official GitHub
+revision in `pyproject.toml`; `speech-faster` installs the optimized active
+backend. Both use the project-local FFmpeg runtime for WAV, MP3, and browser
+WebM decoding. No transcription API key or per-minute fee is required. The
+configured model is downloaded once on first use and cached locally.
 
-Edit `.env` and add your NVIDIA key. Add ElevenLabs if you want the primary
-cloud voice:
+Add ElevenLabs to `.env` if you want the primary cloud voice:
 
 ```dotenv
-NVIDIA_API_KEY=your_nvidia_key_here
 ELEVENLABS_API_KEY=your_key_here
 # Optional: force a voice from ElevenLabs "My Voices".
 ELEVENLABS_VOICE_ID=
 ```
 
 Without an ElevenLabs key, speech synthesis uses the local Kokoro backend.
-The configured model ID is `nvidia/google/gemma-4-31b-it`; the prefix selects
-NVIDIA's OpenAI-compatible NIM endpoint, while the upstream model ID sent to
-NVIDIA remains `google/gemma-4-31b-it`.
+The configured agent model is `qwen3.5:4b`, served entirely by Ollama on the
+local machine.
 
 The sample MCP list connects directly to Obsidian Local REST API's built-in
 MCP endpoint. Its default HTTPS endpoint uses a self-signed certificate, so
@@ -125,7 +137,7 @@ Hold `Space` or hold the `MANUAL FALLBACK` control when ambient sound makes the
 wake phrase unreliable. You can also type a command in the bottom field.
 
 The first Whisper transcription can take longer because the selected model must
-be downloaded and loaded. Change `speech.model` in the config:
+be downloaded and loaded. Change `speech.model` in the config if needed:
 
 | Model | Relative speed | Relative accuracy |
 | --- | --- | --- |
@@ -175,14 +187,16 @@ Important values:
 
 ```toml
 [intelligence]
-default_model = "nvidia/google/gemma-4-31b-it"
-preferred_engine = "cloud"
-provider = "nvidia"
+default_model = "qwen3.5:4b"
+preferred_engine = "ollama"
+provider = "local"
 
 [speech]
-backend = "whisper"
-model = "base"
-device = "auto"
+backend = "faster-whisper"
+model = "small"
+language = "en"
+device = "cpu"
+compute_type = "int8"
 tts_backend = "auto"
 tts_speed = 0.92
 auto_speak = true
@@ -220,7 +234,7 @@ reached.
 
 - Whisper transcription stays on the machine.
 - Wake-word audio stays on the machine and is processed by openWakeWord through
-  ONNX Runtime. Continuous microphone audio is not sent to NVIDIA or
+  ONNX Runtime. Continuous microphone audio is not sent to Ollama or
   ElevenLabs.
 - Ollama/local-model prompts stay on the machine.
 - Text sent to ElevenLabs leaves the machine when that backend is enabled.

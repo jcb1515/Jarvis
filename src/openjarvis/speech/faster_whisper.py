@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 from typing import List, Optional
 
 from openjarvis.core.registry import SpeechRegistry
@@ -40,6 +41,8 @@ class FasterWhisperBackend(SpeechBackend):
         self._compute_type = compute_type
         self._model: Optional[WhisperModel] = None
         self._last_error: Optional[str] = None
+        self._model_lock = threading.Lock()
+        self._transcription_lock = threading.Lock()
 
     def _resolve_compute_type(self) -> str:
         """Pick a CTranslate2 compute type supported by the configured device."""
@@ -79,19 +82,31 @@ class FasterWhisperBackend(SpeechBackend):
 
     def _ensure_model(self) -> WhisperModel:
         """Lazy-load the Whisper model on first use."""
-        if self._model is None:
+        if self._model is not None:
+            return self._model
+        with self._model_lock:
+            if self._model is not None:
+                return self._model
             if WhisperModel is None:
                 self._last_error = (
                     "faster-whisper is not installed. "
-                    "Install with: uv sync --extra desktop"
+                    "Install with: uv sync --extra speech-faster"
                 )
                 raise ImportError(self._last_error)
             compute_type = self._resolve_compute_type()
-            self._model = WhisperModel(
-                self._model_size,
-                device=self._device,
-                compute_type=compute_type,
-            )
+            try:
+                self._model = WhisperModel(
+                    self._model_size,
+                    device=self._device,
+                    compute_type=compute_type,
+                )
+            except Exception as exc:
+                self._last_error = (
+                    f"Could not load faster-whisper model {self._model_size!r} "
+                    f"on device {self._device!r} with "
+                    f"compute_type={compute_type!r}: {exc}"
+                )
+                raise RuntimeError(self._last_error) from exc
         self._last_error = None
         return self._model
 
@@ -103,37 +118,43 @@ class FasterWhisperBackend(SpeechBackend):
         language: Optional[str] = None,
     ) -> TranscriptionResult:
         """Transcribe audio bytes using Faster-Whisper."""
-        try:
-            model = self._ensure_model()
-
-            # Write audio to a temp file (faster-whisper needs a file path).
-            # delete=False + manual unlink: on Windows an open
-            # NamedTemporaryFile holds an exclusive handle, so PyAV's reopen
-            # of tmp.name inside model.transcribe() fails with EACCES.
-            suffix = f".{format}" if not format.startswith(".") else format
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        with self._transcription_lock:
             try:
-                with tmp:
-                    tmp.write(audio)
+                model = self._ensure_model()
 
-                kwargs = {}
-                if language:
-                    kwargs["language"] = language
-
-                segments_iter, info = model.transcribe(tmp.name, **kwargs)
-                segments_list = list(segments_iter)
-            finally:
+                # Write audio to a temp file (faster-whisper needs a file path).
+                # delete=False + manual unlink: on Windows an open
+                # NamedTemporaryFile holds an exclusive handle, so PyAV's reopen
+                # of tmp.name inside model.transcribe() fails with EACCES.
+                suffix = f".{format}" if not format.startswith(".") else format
+                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
                 try:
-                    os.unlink(tmp.name)
-                except OSError as unlink_exc:
-                    logger.debug(
-                        "Could not remove temp audio file %s: %s",
-                        tmp.name,
-                        unlink_exc,
-                    )
-        except Exception as exc:
-            self._last_error = str(exc)
-            raise
+                    with tmp:
+                        tmp.write(audio)
+
+                    kwargs = {}
+                    if language:
+                        kwargs["language"] = language
+
+                    segments_iter, info = model.transcribe(tmp.name, **kwargs)
+                    segments_list = list(segments_iter)
+                finally:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError as unlink_exc:
+                        logger.warning(
+                            "Could not remove faster-whisper input",
+                            extra={
+                                "path": tmp.name,
+                                "error": str(unlink_exc),
+                            },
+                        )
+            except Exception as exc:
+                self._last_error = (
+                    f"Faster-whisper transcription failed for "
+                    f"{format!r} audio with model {self._model_size!r}: {exc}"
+                )
+                raise RuntimeError(self._last_error) from exc
 
         # Build result
         text = "".join(seg.text for seg in segments_list).strip()

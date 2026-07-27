@@ -285,20 +285,11 @@
   color: #fff;
   font-family: 'Chakra Petch', sans-serif;
   font-size: 17px;
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
   letter-spacing: 0.32em;
   text-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
-}
-
-.jarvis-state strong {
-  margin-top: 4px;
-  color: #e8e8e8;
-  font-family: 'Chakra Petch', sans-serif;
-  font-size: 21px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-shadow: 0 0 18px rgba(255, 255, 255, 0.32);
+  white-space: nowrap;
 }
 
 .jarvis-state p {

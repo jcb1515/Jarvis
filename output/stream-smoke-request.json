@@ -1,0 +1,12 @@
+{
+  "model": "qwen3.5:4b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly three words."
+    }
+  ],
+  "stream": true,
+  "max_tokens": 32,
+  "temperature": 0
+}

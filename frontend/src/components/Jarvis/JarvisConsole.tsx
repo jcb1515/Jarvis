@@ -26,7 +26,16 @@ import { MicWaveform } from './MicWaveform';
 import { useVoicePipeline } from './useVoicePipeline';
 import './jarvis-console.css';
 
-const DEFAULT_JARVIS_MODEL = 'nvidia/google/gemma-4-31b-it';
+const DEFAULT_JARVIS_MODEL = 'qwen3.5:4b';
+const CONVERSATION_WINDOW_MS = 12_000;
+const CHAT_START_TIMEOUT_MS = 60_000;
+const CHAT_TOKEN_STALL_TIMEOUT_MS = 12_000;
+
+interface ListeningSessionOptions {
+  automatic: boolean;
+  conversation: boolean;
+  prompt: string;
+}
 
 const DEMO_TRANSCRIPT = [
   {
@@ -64,6 +73,22 @@ const parseDelta = (data: string): string => {
 const formatElapsed = (elapsedMs: number): string =>
   `${(elapsedMs / 1000).toFixed(1)}s`;
 
+const hasElapsedPhase = (stage: JarvisStage): boolean =>
+  stage === 'HEARING' ||
+  stage === 'THINKING' ||
+  stage === 'RESPONDING' ||
+  stage === 'SPEAKING';
+
+const formatPhaseLabel = (
+  stage: JarvisStage,
+  elapsedMs: number,
+): string => {
+  const phase = stage === 'RESPONDING' ? 'THINKING' : stage;
+  return hasElapsedPhase(stage)
+    ? `${phase}, ${formatElapsed(elapsedMs)}`
+    : phase;
+};
+
 const playWakeCue = async (): Promise<void> => {
   const context = new AudioContext();
   const gain = context.createGain();
@@ -96,7 +121,6 @@ export function JarvisConsole() {
     isDemo ? 'SPEAKING' : 'READY',
   );
   const [stageStartedAtMs, setStageStartedAtMs] = useState(Date.now());
-  const [thinkingEndedAtMs, setThinkingEndedAtMs] = useState<number | null>(null);
   const [timerNowMs, setTimerNowMs] = useState(Date.now());
   const [cosmicMode, setCosmicMode] = useState<CosmicMode>('BLACK_HOLE');
   const [command, setCommand] = useState('');
@@ -104,12 +128,20 @@ export function JarvisConsole() {
   const [error, setError] = useState('');
   const [wakeFlash, setWakeFlash] = useState(false);
   const [listeningAutomatically, setListeningAutomatically] = useState(false);
+  const [conversationActive, setConversationActive] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>(
     isDemo ? [DEMO_APPROVAL] : [],
   );
   const inputRef = useRef<HTMLInputElement>(null);
   const autoFinishRef = useRef<() => void>(() => undefined);
+  const beginConversationRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
+  const conversationActiveRef = useRef(false);
+  const conversationDeadlineAtRef = useRef<number | null>(null);
+  const conversationSpeechObservedRef = useRef(false);
   const handledWakeSequenceRef = useRef(0);
+  const stageRef = useRef<JarvisStage>(stage);
   const voice = useVoicePipeline();
 
   const transcript = useMemo(() => {
@@ -121,13 +153,9 @@ export function JarvisConsole() {
   }, [isDemo, sessionMessages]);
 
   const visibleElapsedMs = useMemo(() => {
-    if (stage !== 'HEARING' && stage !== 'THINKING') return 0;
-    const endAt =
-      stage === 'THINKING' && thinkingEndedAtMs !== null
-        ? thinkingEndedAtMs
-        : timerNowMs;
-    return Math.max(0, endAt - stageStartedAtMs);
-  }, [stage, stageStartedAtMs, thinkingEndedAtMs, timerNowMs]);
+    if (!hasElapsedPhase(stage)) return 0;
+    return Math.max(0, timerNowMs - stageStartedAtMs);
+  }, [stage, stageStartedAtMs, timerNowMs]);
 
   const updateSessionAssistant = useCallback((content: string): void => {
     setSessionMessages((current) => {
@@ -143,13 +171,64 @@ export function JarvisConsole() {
   const transitionToStage = useCallback(
     (nextStage: JarvisStage): void => {
       const startedAtMs = Date.now();
+      stageRef.current = nextStage;
       setStage(nextStage);
       setStageStartedAtMs(startedAtMs);
-      setThinkingEndedAtMs(null);
       voice.transitionState(nextStage);
     },
     [voice.transitionState],
   );
+
+  const clearConversationDeadline = useCallback((): void => {
+    conversationDeadlineAtRef.current = null;
+  }, []);
+
+  const deactivateConversation = useCallback((): void => {
+    clearConversationDeadline();
+    conversationActiveRef.current = false;
+    conversationSpeechObservedRef.current = false;
+    setConversationActive(false);
+  }, [clearConversationDeadline]);
+
+  const expireConversationWindow = useCallback(async (): Promise<void> => {
+    conversationDeadlineAtRef.current = null;
+    if (!conversationActiveRef.current) return;
+    if (conversationSpeechObservedRef.current) {
+      autoFinishRef.current();
+      return;
+    }
+
+    conversationActiveRef.current = false;
+    setConversationActive(false);
+    try {
+      await voice.cancelListening();
+      setPartialTranscript('');
+      transitionToStage('READY');
+    } catch (caught) {
+      const detail =
+        caught instanceof Error
+          ? caught.message
+          : 'Could not close the conversation listening window.';
+      setError(detail);
+      transitionToStage('ERROR');
+    }
+  }, [transitionToStage, voice.cancelListening]);
+
+  const armConversationDeadline = useCallback((): void => {
+    conversationDeadlineAtRef.current = Date.now() + CONVERSATION_WINDOW_MS;
+  }, []);
+
+  useEffect(() => {
+    if (!conversationActive || stage !== 'HEARING') return;
+    const deadlineAt = conversationDeadlineAtRef.current;
+    if (deadlineAt === null || timerNowMs < deadlineAt) return;
+    void expireConversationWindow();
+  }, [
+    conversationActive,
+    expireConversationWindow,
+    stage,
+    timerNowMs,
+  ]);
 
   const refreshApprovals = useCallback(async (): Promise<void> => {
     if (isDemo) return;
@@ -177,7 +256,7 @@ export function JarvisConsole() {
   }, [refreshApprovals]);
 
   useEffect(() => {
-    if (stage !== 'HEARING' && stage !== 'THINKING') return;
+    if (!hasElapsedPhase(stage)) return;
     const interval = window.setInterval(() => setTimerNowMs(Date.now()), 100);
     return () => window.clearInterval(interval);
   }, [stage]);
@@ -186,7 +265,7 @@ export function JarvisConsole() {
     const transition = voice.runtimeTransition;
     if (
       transition.stage === stage &&
-      (stage === 'HEARING' || stage === 'THINKING')
+      hasElapsedPhase(stage)
     ) {
       setStageStartedAtMs(transition.startedAtMs);
     }
@@ -245,9 +324,11 @@ export function JarvisConsole() {
     async (rawCommand: string): Promise<void> => {
       const text = rawCommand.trim();
       if (!text) {
+        deactivateConversation();
         transitionToStage('READY');
         return;
       }
+      clearConversationDeadline();
       setError('');
       setCommand('');
       setPartialTranscript(text);
@@ -278,47 +359,90 @@ export function JarvisConsole() {
       }
 
       let response = '';
-      let responseStarted = false;
       try {
         const apiMessages = history.map((message) => ({
           role: message.role,
           content: message.content,
         }));
-        for await (const event of streamChat({
-          model: activeModel,
-          messages: apiMessages,
-          stream: true,
-          temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
-        })) {
-          if (
-            event.event === 'tool_call_start' ||
-            event.event === 'tool_call_end'
-          ) {
-            continue;
-          }
-          try {
-            const delta = parseDelta(event.data);
-            if (delta && !responseStarted) {
-              responseStarted = true;
-              setThinkingEndedAtMs(Date.now());
-              voice.transitionState('RESPONDING');
+        const chatController = new AbortController();
+        let chatTimeoutMessage =
+          'The local model did not begin responding within 60 seconds.';
+        let chatTimeoutId = window.setTimeout(() => {
+          chatController.abort();
+        }, CHAT_START_TIMEOUT_MS);
+        const armChatTimeout = (message: string, timeoutMs: number): void => {
+          window.clearTimeout(chatTimeoutId);
+          chatTimeoutMessage = message;
+          chatTimeoutId = window.setTimeout(() => {
+            chatController.abort();
+          }, timeoutMs);
+        };
+
+        try {
+          for await (const event of streamChat(
+            {
+              model: activeModel,
+              messages: apiMessages,
+              stream: true,
+              temperature: settings.temperature,
+              max_tokens: settings.maxTokens,
+            },
+            chatController.signal,
+          )) {
+            if (
+              event.event === 'tool_call_start' ||
+              event.event === 'tool_call_end'
+            ) {
+              continue;
             }
-            response += delta;
-            updateSessionAssistant(response);
-          } catch (caught) {
-            if (caught instanceof SyntaxError) continue;
-            throw caught;
+            try {
+              const delta = parseDelta(event.data);
+              response += delta;
+              updateSessionAssistant(response);
+              if (delta) {
+                armChatTimeout(
+                  'The local model stopped producing response tokens for 12 seconds.',
+                  CHAT_TOKEN_STALL_TIMEOUT_MS,
+                );
+              }
+            } catch (caught) {
+              if (caught instanceof SyntaxError) continue;
+              throw caught;
+            }
           }
+        } catch (caught) {
+          if (!chatController.signal.aborted) throw caught;
+          if (!response.trim()) throw new Error(chatTimeoutMessage);
+          console.warn('JARVIS closed a stalled response stream', {
+            reason: chatTimeoutMessage,
+            responseLength: response.length,
+          });
+        } finally {
+          window.clearTimeout(chatTimeoutId);
         }
         const resolvedResponse =
           response.trim() || 'The operation completed without a text response.';
-        if (!responseStarted) setThinkingEndedAtMs(Date.now());
         updateSessionAssistant(resolvedResponse);
         await refreshApprovals();
-        transitionToStage('SPEAKING');
-        await voice.speak(resolvedResponse);
+        try {
+          await voice.speak(resolvedResponse, {
+            onPlaybackStart: () => transitionToStage('SPEAKING'),
+          });
+        } catch (caught) {
+          const detail =
+            caught instanceof Error
+              ? caught.message
+              : 'Synthesized speech playback failed.';
+          console.error('JARVIS recovered from speech playback failure', {
+            error: detail,
+            recoveryStage: 'READY',
+          });
+          setError(`Speech playback: ${detail}`);
+          transitionToStage('READY');
+          return;
+        }
         transitionToStage('READY');
+        await beginConversationRef.current();
       } catch (caught) {
         const detail =
           caught instanceof Error ? caught.message : 'Unknown assistant error';
@@ -329,6 +453,8 @@ export function JarvisConsole() {
     },
     [
       activeModel,
+      clearConversationDeadline,
+      deactivateConversation,
       isDemo,
       refreshApprovals,
       sessionMessages,
@@ -342,7 +468,7 @@ export function JarvisConsole() {
   );
 
   const finishListening = useCallback(async (): Promise<void> => {
-    if (!voice.isListening) return;
+    clearConversationDeadline();
     setPartialTranscript('Finalizing locally with Whisper…');
     transitionToStage('THINKING');
     try {
@@ -351,18 +477,21 @@ export function JarvisConsole() {
       if (text) {
         await executeCommand(text);
       } else {
+        deactivateConversation();
         transitionToStage('READY');
       }
     } catch (caught) {
+      deactivateConversation();
       setError(
         caught instanceof Error ? caught.message : 'Transcription failed.',
       );
       transitionToStage('ERROR');
     }
   }, [
+    clearConversationDeadline,
+    deactivateConversation,
     executeCommand,
     transitionToStage,
-    voice.isListening,
     voice.stopListening,
   ]);
 
@@ -373,47 +502,92 @@ export function JarvisConsole() {
   }, [finishListening]);
 
   const beginListening = useCallback(
-    async (automatic: boolean): Promise<void> => {
+    async (options: ListeningSessionOptions): Promise<void> => {
       if (
         voice.isListening ||
-        stage === 'THINKING' ||
-        stage === 'RESPONDING' ||
-        stage === 'SPEAKING'
+        stageRef.current === 'THINKING' ||
+        stageRef.current === 'RESPONDING' ||
+        stageRef.current === 'SPEAKING'
       ) {
         return;
       }
+      if (!options.conversation) deactivateConversation();
       voice.setWakePaused(true);
       setError('');
-      setListeningAutomatically(automatic);
-      setPartialTranscript(
-        automatic
-          ? 'Wake phrase confirmed. Listening…'
-          : 'Manual microphone fallback active…',
-      );
+      setListeningAutomatically(options.automatic);
+      setPartialTranscript(options.prompt);
       transitionToStage('HEARING');
       try {
         await voice.startListening({
-          autoStop: automatic,
+          autoStop: options.automatic,
           onPartialTranscript: (text) => setPartialTranscript(text),
           onPartialError: (partialError) => setError(partialError.message),
           onSpeechEnd: () => autoFinishRef.current(),
         });
+        if (options.conversation) armConversationDeadline();
       } catch (caught) {
-        setError(
+        const detail =
           caught instanceof Error
             ? caught.message
-            : 'Microphone access failed.',
-        );
+            : 'Microphone access failed.';
+        if (options.conversation) {
+          deactivateConversation();
+          setError(`Conversation listening: ${detail}`);
+          transitionToStage('READY');
+          return;
+        }
+        setError(detail);
         transitionToStage('ERROR');
       }
     },
     [
-      stage,
+      armConversationDeadline,
+      deactivateConversation,
       transitionToStage,
       voice.isListening,
       voice.setWakePaused,
       voice.startListening,
     ],
+  );
+
+  const beginConversation = useCallback(async (): Promise<void> => {
+    conversationActiveRef.current = true;
+    conversationSpeechObservedRef.current = false;
+    setConversationActive(true);
+    await beginListening({
+      automatic: true,
+      conversation: true,
+      prompt: 'Conversation open. Listening for your reply…',
+    });
+  }, [beginListening]);
+
+  useEffect(() => {
+    beginConversationRef.current = beginConversation;
+  }, [beginConversation]);
+
+  useEffect(() => {
+    if (
+      !conversationActive ||
+      !voice.isListening ||
+      !voice.vadActive
+    ) {
+      return;
+    }
+    conversationSpeechObservedRef.current = true;
+    armConversationDeadline();
+  }, [
+    armConversationDeadline,
+    conversationActive,
+    voice.isListening,
+    voice.vadActive,
+    voice.vadProbability,
+  ]);
+
+  useEffect(
+    () => () => {
+      clearConversationDeadline();
+    },
+    [clearConversationDeadline],
   );
 
   useEffect(() => {
@@ -432,16 +606,42 @@ export function JarvisConsole() {
         caught instanceof Error ? caught.message : 'Wake cue playback failed.',
       );
     });
-    void beginListening(true);
+    void beginListening({
+      automatic: true,
+      conversation: false,
+      prompt: 'Wake phrase confirmed. Listening…',
+    });
     return () => window.clearTimeout(flashTimer);
   }, [beginListening, stage, voice.wakeSequence]);
 
   const sendTypedCommand = useCallback(async (): Promise<void> => {
     const text = command.trim();
     if (!text || stage === 'THINKING') return;
+    clearConversationDeadline();
+    if (voice.isListening) {
+      try {
+        await voice.cancelListening();
+      } catch (caught) {
+        const detail =
+          caught instanceof Error
+            ? caught.message
+            : 'Could not stop microphone capture before sending text.';
+        setError(detail);
+        transitionToStage('ERROR');
+        return;
+      }
+    }
     transitionToStage('THINKING');
     await executeCommand(text);
-  }, [command, executeCommand, stage, transitionToStage]);
+  }, [
+    clearConversationDeadline,
+    command,
+    executeCommand,
+    stage,
+    transitionToStage,
+    voice.cancelListening,
+    voice.isListening,
+  ]);
 
   useEffect(() => {
     const down = (event: KeyboardEvent): void => {
@@ -453,7 +653,11 @@ export function JarvisConsole() {
         return;
       }
       event.preventDefault();
-      void beginListening(false);
+      void beginListening({
+        automatic: false,
+        conversation: false,
+        prompt: 'Manual microphone fallback active…',
+      });
     };
     const up = (event: KeyboardEvent): void => {
       if (
@@ -495,16 +699,16 @@ export function JarvisConsole() {
 
   const statusDetail = (): string => {
     if (stage === 'HEARING') {
+      if (conversationActive) {
+        return 'Conversation open — reply without saying “Hey Jarvis”';
+      }
       return listeningAutomatically
         ? 'Speak naturally — silence sends automatically'
         : 'Release Space or the microphone to send';
     }
-    if (stage === 'THINKING') {
-      return thinkingEndedAtMs === null
-        ? 'Reasoning and coordinating local tools'
-        : 'Response acquired — preparing voice';
+    if (stage === 'THINKING' || stage === 'RESPONDING') {
+      return 'Reasoning and preparing the response';
     }
-    if (stage === 'RESPONDING') return 'Preparing the final response';
     if (stage === 'SPEAKING') {
       return `Voice output via ${isDemo ? 'elevenlabs' : voice.voiceBackend}`;
     }
@@ -631,12 +835,7 @@ export function JarvisConsole() {
             className={`jarvis-state jarvis-state--${stage.toLowerCase()}`}
             role="status"
           >
-            <span>{stage === 'RESPONDING' ? 'THINKING' : stage}</span>
-            {(stage === 'HEARING' || stage === 'THINKING') && (
-              <strong aria-hidden="true">
-                {formatElapsed(visibleElapsedMs)}
-              </strong>
-            )}
+            <span>{formatPhaseLabel(stage, visibleElapsedMs)}</span>
             <p>{statusDetail()}</p>
           </div>
 
@@ -704,7 +903,13 @@ export function JarvisConsole() {
           <button
             className="jarvis-ptt"
             onPointerCancel={() => void finishListening()}
-            onPointerDown={() => void beginListening(false)}
+            onPointerDown={() =>
+              void beginListening({
+                automatic: false,
+                conversation: false,
+                prompt: 'Manual microphone fallback active…',
+              })
+            }
             onPointerUp={() => void finishListening()}
             type="button"
           >

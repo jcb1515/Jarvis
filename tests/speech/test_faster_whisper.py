@@ -141,15 +141,14 @@ def test_faster_whisper_falls_back_from_unsupported_float16():
     mock_whisper.assert_called_once_with("base", device="cpu", compute_type="int8")
 
 
-def test_faster_whisper_missing_dependency_hint_uses_desktop_extra():
+def test_faster_whisper_missing_dependency_hint_uses_faster_speech_extra():
     with patch("openjarvis.speech.faster_whisper.WhisperModel", new=None):
         backend = FasterWhisperBackend()
 
         with pytest.raises(ImportError) as excinfo:
             backend._ensure_model()
 
-    assert "uv sync --extra desktop" in str(excinfo.value)
-    assert "uv sync --extra speech" not in str(excinfo.value)
+    assert "uv sync --extra speech-faster" in str(excinfo.value)
 
 
 def test_faster_whisper_health_no_model():
@@ -160,7 +159,7 @@ def test_faster_whisper_health_no_model():
     ):
         backend = FasterWhisperBackend()
         assert backend.health() is False
-        assert "uv sync --extra desktop" in (backend.last_error() or "")
+        assert "uv sync --extra speech-faster" in (backend.last_error() or "")
 
 
 def test_faster_whisper_health_captures_load_error():

@@ -895,6 +895,20 @@ async def learning_policy(request: Request):
 speech_router = APIRouter(prefix="/v1/speech", tags=["speech"])
 
 
+def _resolve_speech_language(app: Any, requested: Any) -> Optional[str]:
+    """Resolve an explicit language or the configured speech language."""
+    if isinstance(requested, str) and requested.strip():
+        return requested.strip()
+
+    config = getattr(app.state, "config", None)
+    speech_config = getattr(config, "speech", None)
+    configured = getattr(speech_config, "language", "")
+    if not isinstance(configured, str):
+        return None
+    normalized = configured.strip()
+    return normalized or None
+
+
 @speech_router.post("/transcribe")
 async def transcribe_speech(request: Request):
     """Transcribe uploaded audio to text."""
@@ -908,7 +922,7 @@ async def transcribe_speech(request: Request):
         raise HTTPException(status_code=400, detail="Missing 'file' field")
 
     audio_bytes = await audio_file.read()
-    language = form.get("language")
+    language = _resolve_speech_language(request.app, form.get("language"))
 
     # Detect format from filename
     filename = getattr(audio_file, "filename", "audio.wav")
@@ -919,7 +933,7 @@ async def transcribe_speech(request: Request):
             backend.transcribe,
             audio_bytes,
             format=ext,
-            language=language or None,
+            language=language,
         )
     except Exception as exc:
         logger.exception("Speech transcription failed")
@@ -997,6 +1011,7 @@ async def stream_speech_transcription(websocket: WebSocket) -> None:
                     backend.transcribe,
                     audio,
                     format="webm",
+                    language=_resolve_speech_language(websocket.app, None),
                 )
                 await websocket.send_json(
                     {

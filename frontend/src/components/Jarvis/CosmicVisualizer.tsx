@@ -36,6 +36,9 @@ interface StarLayerProps {
   count: number;
   depth: number;
   drift: number;
+  gravityActive: boolean;
+  gravityRadius: number;
+  gravitySpeedMultiplier: number;
   pointSize: number;
   radius: number;
   reducedMotion: boolean;
@@ -72,6 +75,18 @@ float noise(vec2 p) {
              mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
+float fbm(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.55;
+  mat2 rotation = mat2(0.82, -0.57, 0.57, 0.82);
+  for (int octave = 0; octave < 4; octave++) {
+    value += noise(p) * amplitude;
+    p = rotation * p * 2.03 + vec2(13.1, 7.7);
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
 void main() {
   vec2 p = vUv - 0.5;
   vec2 diskPoint = vec2(p.x, p.y * 4.7);
@@ -79,9 +94,28 @@ void main() {
   if (radius > 1.0 || radius < 0.17) discard;
 
   float angle = atan(diskPoint.y, diskPoint.x);
-  float bands = sin(radius * 78.0 - angle * 5.0 + uTime * 0.72);
-  float filaments = noise(vec2(angle * 4.0 - uTime * 0.18, radius * 36.0));
-  float structure = smoothstep(-0.72, 0.9, bands * 0.44 + filaments);
+  float radialProgress = clamp((radius - 0.17) / 0.83, 0.0, 1.0);
+  float orbitalSpeed = mix(3.4, 0.42, pow(radialProgress, 0.7));
+  float flowAngle = angle - uTime * orbitalSpeed;
+  vec2 orbit = vec2(cos(flowAngle), sin(flowAngle));
+  vec2 turbulentPoint = orbit * (4.0 + radius * 9.0);
+  turbulentPoint += vec2(radius * 19.0, -radius * 7.0);
+  float turbulence = fbm(
+    turbulentPoint + vec2(uTime * 0.09, -uTime * 0.06)
+  );
+  float fineTurbulence = fbm(
+    orbit * (13.0 + radius * 19.0)
+      + vec2(radius * 41.0 - uTime * 0.14, uTime * 0.11)
+  );
+  float spiralPhase =
+    radius * 88.0 - flowAngle * 7.0 + turbulence * 8.0 + fineTurbulence * 3.0;
+  float bands = sin(spiralPhase);
+  float filaments = smoothstep(
+    0.38,
+    0.82,
+    turbulence * 0.7 + fineTurbulence * 0.3
+  );
+  float structure = smoothstep(-0.58, 0.92, bands * 0.5 + filaments);
   float innerHeat = pow(1.0 - smoothstep(0.17, 1.0, radius), 1.55);
 
   float beamingDirection = -0.72 + sin(uTime * 0.16) * 0.16;
@@ -218,6 +252,9 @@ function StarLayer({
   count,
   depth,
   drift,
+  gravityActive,
+  gravityRadius,
+  gravitySpeedMultiplier,
   pointSize,
   radius,
   reducedMotion,
@@ -228,12 +265,99 @@ function StarLayer({
     () => createStarGeometry(count, radius, depth, seed),
     [count, depth, radius, seed],
   );
+  const basePositions = useMemo(() => {
+    const attribute = geometry.getAttribute('position');
+    return new Float32Array(attribute.array);
+  }, [geometry]);
+  const gravityProgressRef = useRef(0);
+  const gravityElapsedRef = useRef(0);
+  const gravitySpeedRef = useRef(1);
+  const previousGravityProgressRef = useRef(0);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
-    groupRef.current.position.x = reducedMotion
+    const driftOffset = reducedMotion
       ? 0
       : -((clock.elapsedTime * drift) % (radius * 2));
+    groupRef.current.position.x = driftOffset;
+    const targetGravity = gravityActive ? (reducedMotion ? 0.28 : 1) : 0;
+    const gravityProgress = THREE.MathUtils.damp(
+      gravityProgressRef.current,
+      targetGravity,
+      gravityActive ? 2.4 : 1.7,
+      delta,
+    );
+    gravityProgressRef.current = gravityProgress;
+    const gravitySpeedTarget = reducedMotion
+      ? Math.min(gravitySpeedMultiplier, 1.2)
+      : gravitySpeedMultiplier;
+    const gravitySpeed = THREE.MathUtils.damp(
+      gravitySpeedRef.current,
+      gravitySpeedTarget,
+      2.6,
+      delta,
+    );
+    gravitySpeedRef.current = gravitySpeed;
+    if (gravityActive || gravityProgress >= 0.0005) {
+      gravityElapsedRef.current +=
+        delta * (reducedMotion ? 0.15 : 1) * gravitySpeed;
+    }
+    const positionAttribute = geometry.getAttribute(
+      'position',
+    ) as THREE.BufferAttribute;
+    const positions = positionAttribute.array as Float32Array;
+    if (!gravityActive && gravityProgress < 0.0005) {
+      if (previousGravityProgressRef.current >= 0.0005) {
+        positions.set(basePositions);
+        positionAttribute.needsUpdate = true;
+      }
+      gravityProgressRef.current = 0;
+      previousGravityProgressRef.current = 0;
+      return;
+    }
+
+    for (let index = 0; index < positions.length; index += 3) {
+      const baseX = basePositions[index];
+      const baseY = basePositions[index + 1];
+      const baseZ = basePositions[index + 2];
+      const worldX = baseX + driftOffset;
+      const centeredY = baseY - 0.2;
+      const distance = Math.hypot(worldX, centeredY);
+      const proximity = THREE.MathUtils.clamp(
+        1 - distance / gravityRadius,
+        0,
+        1,
+      );
+      const influence = Math.pow(proximity, 0.58);
+      const pull = gravityProgress * influence;
+      const pointIndex = index / 3;
+      const capturePhase =
+        (pointIndex * 0.618033988749895 + seed * 0.000001) % 1;
+      const captureSpeed = 0.11 + influence * 0.09;
+      const captureCycle =
+        (capturePhase + gravityElapsedRef.current * captureSpeed) % 1;
+      const captureProgress =
+        captureCycle * captureCycle * (3 - 2 * captureCycle);
+      const angle =
+        Math.atan2(centeredY, worldX) +
+        captureProgress * (2.4 + influence * 4.8);
+      const pulledRadius = distance * (1 - captureProgress * 0.986);
+      const pulledWorldX = Math.cos(angle) * pulledRadius;
+      const pulledY = 0.2 + Math.sin(angle) * pulledRadius;
+      positions[index] = THREE.MathUtils.lerp(
+        baseX,
+        pulledWorldX - driftOffset,
+        pull,
+      );
+      positions[index + 1] = THREE.MathUtils.lerp(baseY, pulledY, pull);
+      positions[index + 2] = THREE.MathUtils.lerp(
+        baseZ,
+        -1.15,
+        pull * 0.82,
+      );
+    }
+    positionAttribute.needsUpdate = true;
+    previousGravityProgressRef.current = gravityProgress;
   });
   return (
     <group ref={groupRef}>
@@ -286,40 +410,43 @@ function BlackHole({
   stage,
   visible,
 }: CelestialProps) {
-  const groupRef = useRef<THREE.Group>(null);
-  const diskRef = useRef<THREE.Mesh>(null);
   const upperJetRef = useRef<THREE.Mesh>(null);
   const lowerJetRef = useRef<THREE.Mesh>(null);
   const haloRef = useRef<THREE.Mesh>(null);
   const uniforms = useMemo(createUniforms, []);
   const energyRef = useRef(0);
   const previousRawRef = useRef(0);
-  const rotationSpeedRef = useRef(0.2);
+  const speakingBlendRef = useRef(0);
+  const flowSpeedRef = useRef(0.2);
 
-  useFrame(({ clock }, delta) => {
+  useFrame((_, delta) => {
     const raw = stage === 'SPEAKING' ? getAudioLevel(getFrequencyData()) : 0;
+    const speakingTarget =
+      stage === 'SPEAKING' ? (reducedMotion ? 0.35 : 1) : 0;
+    const speakingBlend = THREE.MathUtils.damp(
+      speakingBlendRef.current,
+      speakingTarget,
+      2.4,
+      delta,
+    );
+    speakingBlendRef.current = speakingBlend;
     energyRef.current = updateEnvelope(energyRef.current, raw);
     const transient = Math.max(0, raw - previousRawRef.current) * 1.8;
     previousRawRef.current = raw;
-    const energy = THREE.MathUtils.clamp(energyRef.current + transient, 0, 1);
-    const targetRotationSpeed = stage === 'THINKING' ? 0.7 : 0.2;
-    rotationSpeedRef.current = THREE.MathUtils.damp(
-      rotationSpeedRef.current,
-      targetRotationSpeed,
+    const energy =
+      THREE.MathUtils.clamp(energyRef.current + transient, 0, 1) *
+      speakingBlend;
+    const flowSpeedTarget =
+      stage === 'THINKING' || stage === 'RESPONDING' ? 0.7 : 0.2;
+    const flowSpeed = THREE.MathUtils.damp(
+      flowSpeedRef.current,
+      flowSpeedTarget,
       2.2,
       delta,
     );
-    const animationMultiplier = rotationSpeedRef.current / 0.2;
-    uniforms.uTime.value +=
-      delta * animationMultiplier * (reducedMotion ? 0.18 : 1);
+    flowSpeedRef.current = flowSpeed;
+    uniforms.uTime.value += delta * (reducedMotion ? 0.18 : flowSpeed);
     uniforms.uEnergy.value = energy;
-    if (diskRef.current && !reducedMotion) {
-      diskRef.current.rotation.z += delta * rotationSpeedRef.current;
-    }
-    if (groupRef.current) {
-      groupRef.current.rotation.y =
-        Math.sin(clock.elapsedTime * 0.12) * (reducedMotion ? 0 : 0.055);
-    }
     if (haloRef.current) {
       haloRef.current.scale.setScalar(1 + energy * 0.18);
       const material = haloRef.current.material as THREE.MeshBasicMaterial;
@@ -327,16 +454,17 @@ function BlackHole({
     }
     [upperJetRef.current, lowerJetRef.current].forEach((jet) => {
       if (!jet) return;
-      jet.scale.x = 0.72 + energy * 1.45;
-      jet.scale.y = 0.08 + Math.pow(energy, 0.72) * 5.8;
-      jet.scale.z = 0.72 + energy * 1.45;
+      jet.scale.x = 0.52 + energy * 0.68;
+      jet.scale.y = 0.14 + Math.pow(energy, 0.76) * 1.75;
+      jet.scale.z = 0.52 + energy * 0.68;
       const material = jet.material as THREE.MeshBasicMaterial;
-      material.opacity = stage === 'SPEAKING' ? 0.025 + energy * 0.92 : 0.012;
+      material.opacity =
+        0.01 + speakingBlend * (0.012 + energy * 0.26);
     });
   });
 
   return (
-    <group ref={groupRef} visible={visible} position={[0, 0.2, 0]}>
+    <group visible={visible} position={[0, 0.2, 0]}>
       <mesh position={[0, 0, -0.35]} scale={[1.28, 1, 1]}>
         <planeGeometry args={[6.8, 6.8]} />
         <shaderMaterial
@@ -349,7 +477,7 @@ function BlackHole({
           vertexShader={vertexShader}
         />
       </mesh>
-      <mesh ref={diskRef} position={[0, -0.04, -0.08]} rotation={[0, 0, -0.025]}>
+      <mesh position={[0, -0.04, -0.08]} rotation={[0, 0, -0.025]}>
         <planeGeometry args={[7.2, 4.8]} />
         <shaderMaterial
           blending={THREE.AdditiveBlending}
@@ -561,7 +689,9 @@ const useReducedMotion = (): boolean => {
 
 function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
   const reducedMotion = useReducedMotion();
-  const thinkingSpeed = stage === 'THINKING' ? 1.5 : 1;
+  const blackHoleGravityActive = mode === 'BLACK_HOLE';
+  const gravitySpeedMultiplier =
+    stage === 'THINKING' || stage === 'RESPONDING' ? 2.4 : 1;
   return (
     <>
       <color attach="background" args={['#000000']} />
@@ -569,7 +699,10 @@ function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
       <StarLayer
         count={1550}
         depth={46}
-        drift={0.12 * thinkingSpeed}
+        drift={0.12}
+        gravityActive={blackHoleGravityActive}
+        gravityRadius={11}
+        gravitySpeedMultiplier={gravitySpeedMultiplier}
         pointSize={0.028}
         radius={42}
         reducedMotion={reducedMotion}
@@ -578,7 +711,10 @@ function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
       <StarLayer
         count={720}
         depth={28}
-        drift={0.22 * thinkingSpeed}
+        drift={0.22}
+        gravityActive={blackHoleGravityActive}
+        gravityRadius={10}
+        gravitySpeedMultiplier={gravitySpeedMultiplier}
         pointSize={0.052}
         radius={42}
         reducedMotion={reducedMotion}
@@ -587,7 +723,10 @@ function Scene({ getFrequencyData, mode, stage }: VisualizerProps) {
       <StarLayer
         count={170}
         depth={16}
-        drift={0.36 * thinkingSpeed}
+        drift={0.36}
+        gravityActive={blackHoleGravityActive}
+        gravityRadius={9}
+        gravitySpeedMultiplier={gravitySpeedMultiplier}
         pointSize={0.092}
         radius={42}
         reducedMotion={reducedMotion}

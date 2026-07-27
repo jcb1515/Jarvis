@@ -54,6 +54,25 @@ interface ListeningOptions {
   onSpeechEnd: () => void;
 }
 
+interface SpeechPlaybackOptions {
+  onPlaybackStart: () => void;
+}
+
+interface SpeechPlaybackMetadata {
+  backend: string;
+  streaming: boolean;
+  voice: string;
+}
+
+interface PlaybackObserver {
+  cancel: () => void;
+  completion: Promise<void>;
+}
+
+const SPEECH_STALL_CHECK_INTERVAL_MS = 500;
+const SPEECH_STALL_WINDOW_MS = 6_000;
+const PLAYBACK_PROGRESS_EPSILON_SECONDS = 0.02;
+
 const MICROPHONE_CONSTRAINTS: MediaTrackConstraints = {
   autoGainControl: true,
   channelCount: 1,
@@ -78,6 +97,222 @@ const readAnalyser = (
 
 const stopStream = (stream: MediaStream): void => {
   stream.getTracks().forEach((track) => track.stop());
+};
+
+const toError = (caught: unknown, fallbackMessage: string): Error =>
+  caught instanceof Error ? caught : new Error(fallbackMessage);
+
+const describeMediaError = (audio: HTMLAudioElement): Error => {
+  const code = audio.error?.code ?? 0;
+  const labels: Record<number, string> = {
+    1: 'aborted',
+    2: 'network',
+    3: 'decode',
+    4: 'source-not-supported',
+  };
+  return new Error(
+    [
+      'The synthesized audio element emitted an error.',
+      `code=${code}`,
+      `kind=${labels[code] ?? 'unknown'}`,
+      `networkState=${audio.networkState}`,
+      `readyState=${audio.readyState}`,
+    ].join(' '),
+  );
+};
+
+const createPlaybackObserver = (
+  audio: HTMLAudioElement,
+  context: AudioContext,
+  metadata: SpeechPlaybackMetadata,
+  onPlaybackStart: () => void,
+): PlaybackObserver => {
+  let settled = false;
+  let started = false;
+  let lastCurrentTime = audio.currentTime;
+  let lastProgressAtMs = Date.now();
+  let resolveCompletion: () => void = () => undefined;
+  let rejectCompletion: (error: Error) => void = () => undefined;
+
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+
+  const removeListeners = (): void => {
+    audio.removeEventListener('playing', handlePlaying);
+    audio.removeEventListener('ended', handleEnded);
+    audio.removeEventListener('error', handleError);
+  };
+  const settle = (error: Error | null): void => {
+    if (settled) return;
+    settled = true;
+    window.clearInterval(stallIntervalId);
+    removeListeners();
+    if (error) {
+      rejectCompletion(error);
+      return;
+    }
+    resolveCompletion();
+  };
+  const handlePlaying = (): void => {
+    if (started) return;
+    started = true;
+    lastCurrentTime = audio.currentTime;
+    lastProgressAtMs = Date.now();
+    console.info('JARVIS audio playback started', {
+      ...metadata,
+      contextState: context.state,
+      currentTime: audio.currentTime,
+      readyState: audio.readyState,
+    });
+    onPlaybackStart();
+  };
+  const handleEnded = (): void => {
+    console.info('JARVIS audio playback ended', {
+      ...metadata,
+      contextState: context.state,
+      currentTime: audio.currentTime,
+      duration: audio.duration,
+    });
+    settle(null);
+  };
+  const handleError = (): void => {
+    const error = describeMediaError(audio);
+    console.error('JARVIS audio element error', {
+      ...metadata,
+      contextState: context.state,
+      error: error.message,
+    });
+    settle(error);
+  };
+  const stallIntervalId = window.setInterval(() => {
+    const currentTime = audio.currentTime;
+    if (
+      currentTime >
+      lastCurrentTime + PLAYBACK_PROGRESS_EPSILON_SECONDS
+    ) {
+      lastCurrentTime = currentTime;
+      lastProgressAtMs = Date.now();
+      return;
+    }
+    const stalledForMs = Date.now() - lastProgressAtMs;
+    if (stalledForMs < SPEECH_STALL_WINDOW_MS) return;
+    const error = new Error(
+      `Speech playback made no progress for ${SPEECH_STALL_WINDOW_MS} ms.`,
+    );
+    console.error('JARVIS audio playback stalled', {
+      ...metadata,
+      contextState: context.state,
+      currentTime,
+      networkState: audio.networkState,
+      playbackStarted: started,
+      readyState: audio.readyState,
+      stalledForMs,
+    });
+    settle(error);
+  }, SPEECH_STALL_CHECK_INTERVAL_MS);
+
+  audio.addEventListener('playing', handlePlaying);
+  audio.addEventListener('ended', handleEnded);
+  audio.addEventListener('error', handleError);
+
+  return {
+    cancel: () => settle(null),
+    completion,
+  };
+};
+
+const ensureAudioContextRunning = async (
+  context: AudioContext,
+  metadata: SpeechPlaybackMetadata,
+): Promise<void> => {
+  console.info('JARVIS audio context before playback', {
+    ...metadata,
+    contextState: context.state,
+  });
+  if (context.state === 'closed') {
+    throw new Error(
+      'The Web Audio context was closed before synthesized speech playback.',
+    );
+  }
+  if (context.state !== 'running') await context.resume();
+  if (context.state !== 'running') {
+    throw new Error(
+      `The Web Audio context did not resume. contextState=${context.state}`,
+    );
+  }
+  console.info('JARVIS audio context confirmed running before playback', {
+    ...metadata,
+    contextState: context.state,
+  });
+};
+
+const startAudioPlayback = async (
+  audio: HTMLAudioElement,
+  context: AudioContext,
+  metadata: SpeechPlaybackMetadata,
+): Promise<void> => {
+  await ensureAudioContextRunning(context, metadata);
+  try {
+    await audio.play();
+  } catch (caught) {
+    const error = toError(
+      caught,
+      'The browser rejected the synthesized audio play request.',
+    );
+    console.error('JARVIS audio play promise rejected', {
+      ...metadata,
+      contextState: context.state,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+const appendSourceBuffer = async (
+  sourceBuffer: SourceBuffer,
+  chunk: Uint8Array,
+): Promise<void> => {
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      sourceBuffer.removeEventListener('updateend', handleUpdateEnd);
+      sourceBuffer.removeEventListener('error', handleError);
+    };
+    const handleUpdateEnd = (): void => {
+      cleanup();
+      resolve();
+    };
+    const handleError = (): void => {
+      cleanup();
+      reject(new Error('Could not buffer streamed voice audio.'));
+    };
+    sourceBuffer.addEventListener('updateend', handleUpdateEnd);
+    sourceBuffer.addEventListener('error', handleError);
+    sourceBuffer.appendBuffer(chunk.slice().buffer);
+  });
+};
+
+const finalizeRecorderCapture = async (
+  state: RecorderState,
+): Promise<Blob> => {
+  state.stopped = true;
+  window.clearInterval(state.partialTimer);
+  state.transcriptionStream.close();
+  state.vadStream.close();
+  const stopped = new Promise<void>((resolve) => {
+    state.recorder.addEventListener('stop', () => resolve(), { once: true });
+  });
+  state.recorder.stop();
+  await stopped;
+  const audio = new Blob(state.chunks, {
+    type: state.recorder.mimeType || 'audio/webm',
+  });
+  if (state.ownsAudioResources) {
+    stopStream(state.stream);
+    await state.context.close();
+  }
+  return audio;
 };
 
 const disposeWakeMonitor = async (
@@ -283,6 +518,15 @@ export function useVoicePipeline() {
     }
   }, []);
 
+  const resetListeningState = useCallback((): void => {
+    recorderRef.current = null;
+    setIsListening(false);
+    setVadActive(false);
+    setVadProbability(0);
+    setVadRmsDbfs(-120);
+    setVadSilenceMs(0);
+  }, []);
+
   const startListening = useCallback(
     async (options: ListeningOptions): Promise<void> => {
       if (recorderRef.current) return;
@@ -403,28 +647,8 @@ export function useVoicePipeline() {
   const stopListening = useCallback(async (): Promise<string> => {
     const state = recorderRef.current;
     if (!state || state.stopped) return '';
-    state.stopped = true;
-    window.clearInterval(state.partialTimer);
-    state.transcriptionStream.close();
-    state.vadStream.close();
-    const stopped = new Promise<void>((resolve) => {
-      state.recorder.addEventListener('stop', () => resolve(), { once: true });
-    });
-    state.recorder.stop();
-    await stopped;
-    const audio = new Blob(state.chunks, {
-      type: state.recorder.mimeType || 'audio/webm',
-    });
-    if (state.ownsAudioResources) {
-      stopStream(state.stream);
-      await state.context.close();
-    }
-    recorderRef.current = null;
-    setIsListening(false);
-    setVadActive(false);
-    setVadProbability(0);
-    setVadRmsDbfs(-120);
-    setVadSilenceMs(0);
+    const audio = await finalizeRecorderCapture(state);
+    resetListeningState();
     if (audio.size === 0) {
       throw new Error('The microphone recording was empty.');
     }
@@ -433,89 +657,151 @@ export function useVoicePipeline() {
       'jarvis-command.webm',
     );
     return transcription.text.trim();
-  }, []);
+  }, [resetListeningState]);
 
-  const speak = useCallback(async (text: string): Promise<void> => {
-    const result = await openSpeechStream(text, '', 0.92);
-    setVoiceBackend(result.backend);
-    const audio = new Audio();
-    const context = new AudioContext();
-    const source = context.createMediaElementSource(audio);
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.8;
-    source.connect(analyser);
-    analyser.connect(context.destination);
-    outputAnalyserRef.current = analyser;
-    outputContextRef.current = context;
-    setIsSpeaking(true);
-    const playbackFinished = new Promise<void>((resolve, reject) => {
-      audio.addEventListener('ended', () => resolve(), { once: true });
-      audio.addEventListener(
-        'error',
-        () => reject(new Error('The synthesized audio could not be played.')),
-        { once: true },
+  const cancelListening = useCallback(async (): Promise<void> => {
+    const state = recorderRef.current;
+    if (!state || state.stopped) return;
+    await finalizeRecorderCapture(state);
+    resetListeningState();
+  }, [resetListeningState]);
+
+  const speak = useCallback(
+    async (
+      text: string,
+      options: SpeechPlaybackOptions,
+    ): Promise<void> => {
+      const result = await openSpeechStream(text, '', 0.92);
+      const metadata: SpeechPlaybackMetadata = {
+        backend: result.backend,
+        streaming: result.streaming,
+        voice: result.voice,
+      };
+      setVoiceBackend(result.backend);
+
+      const audio = new Audio();
+      const existingContext = outputContextRef.current;
+      const context =
+        existingContext && existingContext.state !== 'closed'
+          ? existingContext
+          : new AudioContext();
+      outputContextRef.current = context;
+      const source = context.createMediaElementSource(audio);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      source.connect(analyser);
+      analyser.connect(context.destination);
+      outputAnalyserRef.current = analyser;
+
+      let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let audioUrl = '';
+      const playback = createPlaybackObserver(
+        audio,
+        context,
+        metadata,
+        () => {
+          setIsSpeaking(true);
+          options.onPlaybackStart();
+        },
       );
-    });
 
-    let audioUrl = '';
-    try {
-      if (result.streaming) {
-        if (!result.response.body) {
-          throw new Error('ElevenLabs returned an empty streaming response.');
-        }
-        if (!MediaSource.isTypeSupported('audio/mpeg')) {
-          throw new Error(
-            'This browser cannot stream MPEG audio with MediaSource.',
-          );
-        }
-        const mediaSource = new MediaSource();
-        audioUrl = URL.createObjectURL(mediaSource);
-        audio.src = audioUrl;
-        await new Promise<void>((resolve) => {
-          mediaSource.addEventListener('sourceopen', () => resolve(), {
-            once: true,
-          });
-        });
-        const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-        const reader = result.response.body.getReader();
-        let playbackStarted = false;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await new Promise<void>((resolve, reject) => {
-            sourceBuffer.addEventListener('updateend', () => resolve(), {
-              once: true,
-            });
-            sourceBuffer.addEventListener(
-              'error',
-              () =>
-                reject(new Error('Could not buffer streamed voice audio.')),
-              { once: true },
-            );
-            sourceBuffer.appendBuffer(value.slice().buffer);
-          });
-          if (!playbackStarted) {
-            playbackStarted = true;
-            await audio.play();
+      try {
+        if (result.streaming) {
+          const streamBody = result.response.body;
+          if (!streamBody) {
+            throw new Error('ElevenLabs returned an empty streaming response.');
           }
+          if (!MediaSource.isTypeSupported('audio/mpeg')) {
+            throw new Error(
+              'This browser cannot stream MPEG audio with MediaSource.',
+            );
+          }
+          const mediaSource = new MediaSource();
+          audioUrl = URL.createObjectURL(mediaSource);
+          audio.src = audioUrl;
+          const reader = streamBody.getReader();
+          activeReader = reader;
+          const streamTask = (async (): Promise<void> => {
+            await new Promise<void>((resolve) => {
+              mediaSource.addEventListener('sourceopen', () => resolve(), {
+                once: true,
+              });
+            });
+            const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+            let playbackRequested = false;
+            let playbackAttempt: Promise<void> | null = null;
+            let playbackError: Error | null = null;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await appendSourceBuffer(sourceBuffer, value);
+              if (!playbackRequested) {
+                playbackRequested = true;
+                playbackAttempt = startAudioPlayback(
+                  audio,
+                  context,
+                  metadata,
+                ).catch((caught) => {
+                  playbackError = toError(
+                    caught,
+                    'The streamed audio play request failed.',
+                  );
+                });
+              }
+            }
+            if (!playbackAttempt) {
+              throw new Error(
+                'The streaming speech response contained no audio bytes.',
+              );
+            }
+            if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+            await playbackAttempt;
+            if (playbackError) throw playbackError;
+          })();
+          await Promise.race([
+            playback.completion,
+            streamTask.then(() => playback.completion),
+          ]);
+        } else {
+          const audioBlob = await result.response.blob();
+          if (audioBlob.size === 0) {
+            throw new Error('The synthesized speech response was empty.');
+          }
+          audioUrl = URL.createObjectURL(audioBlob);
+          audio.src = audioUrl;
+          const playTask = startAudioPlayback(audio, context, metadata).then(
+            () => playback.completion,
+          );
+          await Promise.race([playback.completion, playTask]);
         }
-        if (mediaSource.readyState === 'open') mediaSource.endOfStream();
-      } else {
-        const audioBlob = await result.response.blob();
-        audioUrl = URL.createObjectURL(audioBlob);
-        audio.src = audioUrl;
-        await audio.play();
+      } catch (caught) {
+        const error = toError(caught, 'Synthesized speech playback failed.');
+        console.error('JARVIS speech playback failed', {
+          ...metadata,
+          contextState: context.state,
+          error: error.message,
+        });
+        throw error;
+      } finally {
+        playback.cancel();
+        if (activeReader) {
+          await activeReader.cancel('Speech playback lifecycle completed.');
+        }
+        setIsSpeaking(false);
+        if (outputAnalyserRef.current === analyser) {
+          outputAnalyserRef.current = null;
+        }
+        source.disconnect();
+        analyser.disconnect();
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+        if (audioUrl) URL.revokeObjectURL(audioUrl);
       }
-      await playbackFinished;
-    } finally {
-      setIsSpeaking(false);
-      outputAnalyserRef.current = null;
-      await context.close();
-      outputContextRef.current = null;
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -540,6 +826,7 @@ export function useVoicePipeline() {
   );
 
   return {
+    cancelListening,
     enableWakeWord,
     getMicData,
     getOutputData,
