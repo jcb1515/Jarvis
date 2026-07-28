@@ -73,6 +73,9 @@ class _ToolCallingEngine:
 
 def test_action_classifier_preserves_direct_conversation() -> None:
     assert is_action_oriented("Check my next calendar meeting") is True
+    assert is_action_oriented("Find me a movie") is True
+    assert is_action_oriented("Search YouTube for a trailer") is True
+    assert is_action_oriented("Browse Twitch for a live stream") is True
     assert is_action_oriented("Explain how email encryption works") is False
 
 
@@ -103,6 +106,23 @@ def test_action_tool_selection_includes_read_context_for_browser_write() -> None
     assert [tool.spec.name for tool in selected] == [
         "browser_snapshot",
         "browser_click",
+    ]
+
+
+def test_movie_discovery_selects_only_browser_read_tools() -> None:
+    tools = [
+        _ScopedTool("browser_navigate", "playwright"),
+        _ScopedTool("browser_snapshot", "playwright"),
+        _ScopedTool("browser_click", "playwright"),
+        _ScopedTool("gmail_search", "google_workspace"),
+        _ScopedTool("vault_read", "obsidian"),
+    ]
+
+    selected = select_action_tools("Find me a movie", tools)
+
+    assert [tool.spec.name for tool in selected] == [
+        "browser_navigate",
+        "browser_snapshot",
     ]
 
 

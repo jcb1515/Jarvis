@@ -84,6 +84,13 @@ def test_resolve_action_routes_gmail_to_chrome(command: str) -> None:
             "https://www.bestbuy.ca/",
             "Best Buy",
         ),
+        (
+            "Can you open Instagram for me?",
+            "https://www.instagram.com/",
+            "Instagram",
+        ),
+        ("Open Reddit.", "https://www.reddit.com/", "Reddit"),
+        ("Open GitHub.", "https://github.com/", "GitHub"),
     ],
 )
 def test_resolve_action_routes_known_named_websites(
@@ -103,21 +110,16 @@ def test_resolve_action_routes_known_named_websites(
         (
             "Open Acme Robotics' website.",
             "acme+robotics+official+website",
-            "a search for Acme Robotics' official website",
-        ),
-        (
-            "Open Reddit.",
-            "reddit+official+website",
-            "a search for Reddit's official website",
+            "Acme Robotics",
         ),
         (
             "Can you open Ferguson Plumbing for me?",
             "ferguson+plumbing+official+website",
-            "a search for Ferguson Plumbing's official website",
+            "Ferguson Plumbing",
         ),
     ],
 )
-def test_resolve_action_searches_for_unknown_named_website(
+def test_resolve_action_uses_direct_result_for_unknown_named_website(
     command: str,
     query: str,
     label: str,
@@ -125,9 +127,45 @@ def test_resolve_action_searches_for_unknown_named_website(
     assert resolve_action(command) == ActionRequest(
         kind=ActionKind.OPEN_URL,
         arguments={
-            "url": f"https://www.google.com/search?q={query}",
+            "url": f"https://www.google.com/search?btnI=1&q={query}",
             "label": label,
         },
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "url", "label"),
+    [
+        (
+            "Find me a movie.",
+            "https://www.google.com/search?q=best+movies+to+watch",
+            "live web results for best movies to watch",
+        ),
+        (
+            "Search YouTube for science fiction trailers.",
+            "https://www.youtube.com/results?search_query=science+fiction+trailers",
+            "YouTube results for science fiction trailers",
+        ),
+        (
+            "Find live astronomy streams on Twitch.",
+            "https://www.twitch.tv/search?term=live+astronomy+streams",
+            "Twitch results for live astronomy streams",
+        ),
+        (
+            "Browse the web for new movie releases.",
+            "https://www.google.com/search?q=new+movie+releases",
+            "live web results for new movie releases",
+        ),
+    ],
+)
+def test_resolve_action_routes_live_discovery_directly_to_search(
+    command: str,
+    url: str,
+    label: str,
+) -> None:
+    assert resolve_action(command) == ActionRequest(
+        kind=ActionKind.OPEN_URL,
+        arguments={"url": url, "label": label},
     )
 
 
@@ -146,6 +184,7 @@ def test_resolve_action_does_not_hijack_conversation() -> None:
         "What is my morning brief?",
         "Give me today's brief.",
         "Read my brief for today.",
+        "Read me my morning brief for the day.",
     ],
 )
 def test_resolve_action_routes_natural_daily_brief_requests(command: str) -> None:

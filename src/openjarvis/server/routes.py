@@ -168,9 +168,13 @@ def _execute_daily_brief_action(
         app.state.daily_brief_service = service
 
     note = service.read_brief(brief_date)
+    from openjarvis.assistant.context_memory import read_cached_context
+
+    approved_context = read_cached_context(config.context_memory)
     summary = summarize_daily_brief(
         note,
         brief_config.spoken_max_chars,
+        approved_context,
     )
     resolved_action = ActionRequest(
         kind=ActionKind.DAILY_BRIEF,
@@ -245,17 +249,9 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
             system_prompt_config=getattr(cfg, "system_prompt", None),
         )
         prompt = builder.build()
-        context_config = getattr(cfg, "context_memory", None)
-        if context_config is not None:
-            from openjarvis.assistant.context_memory import read_cached_context
-
-            cached_context = read_cached_context(context_config)
-            if cached_context:
-                prompt = (
-                    f"{prompt}\n\n"
-                    "Approved durable user context from Obsidian:\n"
-                    f"{cached_context}"
-                )
+        approved_context = _approved_context_prompt(cfg)
+        if approved_context:
+            prompt = f"{prompt}\n\n{approved_context}"
     except Exception:
         logging.getLogger("openjarvis.server").debug(
             "Identity system prompt resolution failed; "
@@ -268,6 +264,30 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
         return messages
 
     return [Message(role=Role.SYSTEM, content=prompt), *messages]
+
+
+def _approved_context_prompt(app_config) -> str:
+    """Return authoritative Obsidian context plus its usage contract."""
+
+    context_config = getattr(app_config, "context_memory", None)
+    if context_config is None:
+        return ""
+
+    from openjarvis.assistant.context_memory import read_cached_context
+
+    cached_context = read_cached_context(context_config)
+    if not cached_context:
+        return ""
+    return (
+        "Approved durable user context from Obsidian. Treat these explicit facts "
+        "as authoritative and do not invent missing details:\n"
+        f"{cached_context}\n\n"
+        "For a narrow question, use only the relevant facts. When James asks for "
+        "an overview of himself, his preferences, his projects, or what you know "
+        "about him, synthesize the majority of relevant facts across Preferences, "
+        "Ongoing Projects, and Recurring Facts instead of selecting one isolated "
+        "detail."
+    )
 
 
 @router.post("/v1/chat/completions")
@@ -531,6 +551,7 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
             complexity_info,
             trace_store=getattr(request.app.state, "trace_store", None),
             bus=getattr(request.app.state, "bus", None),
+            app_config=config,
         )
     else:
         bus = getattr(request.app.state, "bus", None)
@@ -740,6 +761,7 @@ def _handle_agent(
     *,
     trace_store=None,
     bus=None,
+    app_config=None,
 ) -> ChatCompletionResponse:
     """Run through agent.
 
@@ -754,6 +776,12 @@ def _handle_agent(
 
     # Build context from prior messages
     ctx = AgentContext()
+    if app_config is not None:
+        approved_context = _approved_context_prompt(app_config)
+        if approved_context:
+            ctx.conversation.add(
+                Message(role=Role.SYSTEM, content=approved_context),
+            )
     if len(req.messages) > 1:
         prior = _to_messages(req.messages[:-1])
         for m in prior:

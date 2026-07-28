@@ -77,14 +77,37 @@ _NAMED_WEBSITE_COMMAND = re.compile(
     r"(?P<target>.+?)[.!?]?\s*$",
     re.IGNORECASE,
 )
+_SEARCH_PROVIDER_PREFIX_COMMAND = re.compile(
+    rf"^\s*{_REQUEST_PREFIX}"
+    r"(?:search|browse)\s+(?:the\s+)?"
+    r"(?P<provider>youtube|twitch|google|web|internet)"
+    r"(?:\s+(?:for|to\s+find))?\s+(?P<query>.+?)"
+    rf"{_REQUEST_SUFFIX}[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_SEARCH_PROVIDER_SUFFIX_COMMAND = re.compile(
+    rf"^\s*{_REQUEST_PREFIX}"
+    r"(?:find|discover|recommend|search(?:\s+for)?|look\s+up)\s+"
+    r"(?:me\s+)?(?P<query>.+?)\s+(?:on|in|using)\s+(?:the\s+)?"
+    r"(?P<provider>youtube|twitch|google|web|internet)"
+    rf"{_REQUEST_SUFFIX}[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_MEDIA_DISCOVERY_COMMAND = re.compile(
+    rf"^\s*{_REQUEST_PREFIX}"
+    r"(?:find|discover|recommend|search\s+for|look\s+up)\s+"
+    r"(?:me\s+)?(?P<query>.+?)"
+    rf"{_REQUEST_SUFFIX}[.!?]?\s*$",
+    re.IGNORECASE,
+)
 _DAILY_BRIEF_COMMAND = re.compile(
     r"^\s*(?:please\s+)?(?:"
-    r"(?:give(?:\s+me)?|read|show(?:\s+me)?|summarize|tell\s+me(?:\s+about)?)"
+    r"(?:give(?:\s+me)?|read(?:\s+me)?|show(?:\s+me)?|summarize|tell\s+me(?:\s+about)?)"
     r"\s+(?:(?:my|the|today'?s)\s+)?(?:(?:daily|morning)\s+)?brief(?:ing)?"
     r"|what(?:'s|\s+is)\s+(?:in\s+)?(?:my|the|today'?s)\s+"
     r"(?:(?:daily|morning)\s+)?brief(?:ing)?"
     r")"
-    r"(?:\s+(?:for\s+)?(?:today|\d{4}-\d{2}-\d{2}))?[?.!]?\s*$",
+    r"(?:\s+(?:for\s+)?(?:today|the\s+day|\d{4}-\d{2}-\d{2}))?[?.!]?\s*$",
     re.IGNORECASE,
 )
 _ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
@@ -106,14 +129,37 @@ _OBSIDIAN_RELATIVE_PATHS: tuple[tuple[str, str], ...] = (
 _WEB_ALIASES: Mapping[str, tuple[str, str]] = {
     "gmail": ("https://mail.google.com/", "Gmail"),
     "google mail": ("https://mail.google.com/", "Gmail"),
+    "google": ("https://www.google.com/", "Google"),
     "claude": ("https://claude.ai/", "Claude"),
     "claude ai": ("https://claude.ai/", "Claude"),
     "anthropic": ("https://www.anthropic.com/", "Anthropic"),
     "apple": ("https://www.apple.com/ca/", "Apple"),
     "apple canada": ("https://www.apple.com/ca/", "Apple Canada"),
+    "amazon": ("https://www.amazon.ca/", "Amazon"),
+    "amazon canada": ("https://www.amazon.ca/", "Amazon Canada"),
     "best buy": ("https://www.bestbuy.ca/", "Best Buy"),
     "bestbuy": ("https://www.bestbuy.ca/", "Best Buy"),
+    "discord": ("https://discord.com/", "Discord"),
+    "facebook": ("https://www.facebook.com/", "Facebook"),
+    "github": ("https://github.com/", "GitHub"),
+    "instagram": ("https://www.instagram.com/", "Instagram"),
+    "linkedin": ("https://www.linkedin.com/", "LinkedIn"),
+    "netflix": ("https://www.netflix.com/", "Netflix"),
+    "pinterest": ("https://www.pinterest.com/", "Pinterest"),
+    "reddit": ("https://www.reddit.com/", "Reddit"),
+    "snapchat": ("https://www.snapchat.com/", "Snapchat"),
+    "spotify": ("https://open.spotify.com/", "Spotify"),
+    "tiktok": ("https://www.tiktok.com/", "TikTok"),
+    "twitch": ("https://www.twitch.tv/", "Twitch"),
+    "twitter": ("https://x.com/", "X"),
+    "x": ("https://x.com/", "X"),
+    "youtube": ("https://www.youtube.com/", "YouTube"),
 }
+_MEDIA_DISCOVERY_TERMS = re.compile(
+    r"\b(?:film|movie|show|stream|trailer|video)s?\b|"
+    r"\bsomething\s+to\s+watch\b|\bwhat\s+to\s+watch\b",
+    re.IGNORECASE,
+)
 _NON_WEBSITE_TARGETS = frozenset(
     {
         "cmd",
@@ -182,7 +228,7 @@ def _normalize_named_website(value: str) -> tuple[str, bool]:
 
 
 def _named_website_action(command: str) -> ActionRequest | None:
-    """Resolve a known website or a safe official-site search."""
+    """Resolve a known website or a direct official-result redirect."""
 
     match = _NAMED_WEBSITE_COMMAND.fullmatch(command)
     if match is None:
@@ -213,17 +259,77 @@ def _named_website_action(command: str) -> ActionRequest | None:
     display_name = " ".join(
         word.capitalize() for word in website_name.split()
     )
-    possessive_name = (
-        f"{display_name}'" if display_name.casefold().endswith("s")
-        else f"{display_name}'s"
-    )
     search_query = quote_plus(f"{website_name} official website")
     return ActionRequest(
         kind=ActionKind.OPEN_URL,
         arguments={
-            "url": f"https://www.google.com/search?q={search_query}",
-            "label": f"a search for {possessive_name} official website",
+            "url": f"https://www.google.com/search?btnI=1&q={search_query}",
+            "label": display_name,
         },
+    )
+
+
+def _search_url(query: str, provider: str) -> tuple[str, str]:
+    """Return a validated live-search URL and its user-facing label."""
+
+    normalized_provider = provider.casefold()
+    normalized_query = _strip_wrapping_punctuation(query)
+    if not normalized_query:
+        raise ActionError("No live-search query was provided.")
+    if normalized_query.casefold() in {
+        "a film",
+        "a movie",
+        "film",
+        "movie",
+        "something to watch",
+    }:
+        normalized_query = "best movies to watch"
+    encoded_query = quote_plus(normalized_query)
+    if normalized_provider == "youtube":
+        return (
+            f"https://www.youtube.com/results?search_query={encoded_query}",
+            f"YouTube results for {normalized_query}",
+        )
+    if normalized_provider == "twitch":
+        return (
+            f"https://www.twitch.tv/search?term={encoded_query}",
+            f"Twitch results for {normalized_query}",
+        )
+    return (
+        f"https://www.google.com/search?q={encoded_query}",
+        f"live web results for {normalized_query}",
+    )
+
+
+def _search_action(command: str) -> ActionRequest | None:
+    """Route explicit live discovery directly to a browser search."""
+
+    for pattern in (
+        _SEARCH_PROVIDER_PREFIX_COMMAND,
+        _SEARCH_PROVIDER_SUFFIX_COMMAND,
+    ):
+        match = pattern.fullmatch(command)
+        if match is None:
+            continue
+        url, label = _search_url(
+            match.group("query"),
+            match.group("provider"),
+        )
+        return ActionRequest(
+            kind=ActionKind.OPEN_URL,
+            arguments={"url": url, "label": label},
+        )
+
+    media_match = _MEDIA_DISCOVERY_COMMAND.fullmatch(command)
+    if media_match is None:
+        return None
+    query = media_match.group("query")
+    if _MEDIA_DISCOVERY_TERMS.search(query) is None:
+        return None
+    url, label = _search_url(query, "web")
+    return ActionRequest(
+        kind=ActionKind.OPEN_URL,
+        arguments={"url": url, "label": label},
     )
 
 
@@ -313,6 +419,10 @@ def resolve_action(command: str) -> ActionRequest | None:
             kind=ActionKind.OPEN_URL,
             arguments={"url": gmail_url, "label": gmail_label},
         )
+
+    search_action = _search_action(command)
+    if search_action is not None:
+        return search_action
 
     application_match = _APP_COMMAND.fullmatch(command)
     if application_match is not None:

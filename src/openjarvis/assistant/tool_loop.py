@@ -13,17 +13,21 @@ from openjarvis.tools._stubs import BaseTool, ToolExecutor
 _ACTION_VERBS = (
     "accept",
     "archive",
+    "browse",
     "check",
     "click",
     "close",
     "create",
     "decline",
     "delete",
+    "discover",
     "download",
     "fill",
     "find",
     "list",
+    "look",
     "read",
+    "recommend",
     "respond",
     "schedule",
     "search",
@@ -42,9 +46,18 @@ _TOOL_NOUNS = (
     "inbox",
     "meeting",
     "message",
+    "movie",
     "page",
     "site",
+    "show",
+    "stream",
+    "trailer",
+    "twitch",
+    "video",
     "website",
+    "web",
+    "youtube",
+    "film",
     "note",
     "obsidian",
 )
@@ -118,7 +131,11 @@ def select_action_tools(
         )
     if re.search(r"\b(?:note|obsidian)s?\b", lowered):
         selected_servers.add("obsidian")
-    if re.search(r"\b(?:browser|page|site|website)s?\b", lowered):
+    if re.search(
+        r"\b(?:browser|film|internet|movie|page|site|show|stream|trailer|"
+        r"twitch|video|web|website|youtube)s?\b",
+        lowered,
+    ):
         selected_names.update(_BROWSER_READ_TOOLS)
         for keyword, tool_names in _BROWSER_WRITE_TOOL_KEYWORDS:
             if re.search(rf"\b{re.escape(keyword)}\b", lowered):

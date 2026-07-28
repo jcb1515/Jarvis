@@ -126,7 +126,7 @@ def test_summary_scans_sections_and_reports_key_lines() -> None:
     service = DailyBriefService(client, "Morning Brief/Daily Briefs")
     note = service.read_brief(date(2026, 7, 27))
 
-    summary = summarize_daily_brief(note, 1000)
+    summary = summarize_daily_brief(note, 1000, "")
 
     assert "Calendar: First event Second event" in summary
     assert "Research: Important finding" in summary
@@ -161,8 +161,9 @@ def test_summary_reads_production_banner_sections() -> None:
     service = DailyBriefService(client, "Morning Brief/Daily Briefs")
     note = service.read_brief(date(2026, 7, 27))
 
-    summary = summarize_daily_brief(note, 1000)
+    summary = summarize_daily_brief(note, 1000, "Waterloo ECE preparation")
 
     assert "Waterloo Prep: deadline and course check" in summary
-    assert "Top priorities: Submit the application tonight." in summary
-    assert "Executive snapshot: Today is a preparation day." in summary
+    assert "READ THIS FIRST: Submit the application tonight." in summary
+    assert "EXECUTIVE SNAPSHOT: Today is a preparation day." in summary
+    assert "OTHER RESEARCH: Additional source material." in summary

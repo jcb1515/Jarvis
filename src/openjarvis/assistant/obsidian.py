@@ -325,7 +325,11 @@ class DailyBriefService:
         )
 
 
-def summarize_daily_brief(note: DailyBriefNote, max_chars: int) -> str:
+def summarize_daily_brief(
+    note: DailyBriefNote,
+    max_chars: int,
+    approved_context: str,
+) -> str:
     """Create a concise voice-ready summary while scanning the complete note."""
 
     if max_chars < 200:
@@ -333,8 +337,13 @@ def summarize_daily_brief(note: DailyBriefNote, max_chars: int) -> str:
     content = re.sub(r"\A---\s*\n.*?\n---\s*\n", "", note.content, flags=re.DOTALL)
     banner_sections = _parse_banner_sections(content)
     if banner_sections:
-        summary = _summarize_banner_brief(note, content, banner_sections)
-        return _truncate_summary(summary, max_chars)
+        return _summarize_banner_brief(
+            note,
+            content,
+            banner_sections,
+            max_chars,
+            approved_context,
+        )
 
     summary = _summarize_markdown_brief(note, content)
     return _truncate_summary(summary, max_chars)
@@ -390,38 +399,148 @@ def _clean_spoken_line(line: str) -> str:
     if not cleaned or cleaned.startswith(("```", "|")):
         return ""
     cleaned = re.sub(r"^[-*>\d.)\s]+", "", cleaned).strip()
-    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    return re.sub(r"https?://\S+", "", cleaned).strip()
 
 
 def _summarize_banner_brief(
     note: DailyBriefNote,
     content: str,
     sections: Mapping[str, list[str]],
+    max_chars: int,
+    approved_context: str,
 ) -> str:
-    """Summarize the production Morning Brief format around its action sections."""
+    """Cover every substantive brief section, prioritizing user-relevant detail."""
 
     subject_match = re.search(r"(?m)^Subject:\s*(.+)$", content)
-    parts = [f"Here is your {note.date.strftime('%A, %B %d')} daily brief."]
+    introduction = f"Here is your {note.date.strftime('%A, %B %d')} daily brief."
     if subject_match is not None:
-        parts.append(subject_match.group(1).strip() + ".")
+        introduction += " " + subject_match.group(1).strip() + "."
 
-    priorities = sections.get("READ THIS FIRST", [])
-    snapshot = sections.get("EXECUTIVE SNAPSHOT", [])
-    if priorities:
-        parts.append("Top priorities: " + " ".join(priorities[:5]))
-    if snapshot:
-        parts.append("Executive snapshot: " + " ".join(snapshot[:2]))
-    if len(parts) == 1:
-        first_section = next(
-            (lines for lines in sections.values() if lines),
-            [],
-        )
-        if first_section:
-            parts.append(" ".join(first_section[:3]))
-    if len(parts) == 1:
+    excluded_sections = {
+        "SOURCES AND FURTHER READING",
+        "SOURCE AUDIT",
+    }
+    readable_sections = [
+        (heading, lines)
+        for heading, lines in sections.items()
+        if lines and heading not in excluded_sections
+    ]
+    if not readable_sections:
         raise ObsidianServiceError(
             f"The daily brief '{note.source_path}' contains no readable prose."
         )
+
+    selected = {
+        heading: [lines[0]]
+        for heading, lines in readable_sections
+    }
+    context_keywords = _context_keywords(approved_context)
+    candidates: list[tuple[int, int, str, str]] = []
+    for section_index, (heading, lines) in enumerate(readable_sections):
+        relevance = _section_context_relevance(
+            heading,
+            lines,
+            context_keywords,
+        )
+        if heading == "READ THIS FIRST":
+            relevance += 100
+            maximum_lines = 6
+        elif heading == "EXECUTIVE SNAPSHOT":
+            relevance += 80
+            maximum_lines = 4
+        elif relevance > 0:
+            maximum_lines = 4
+        else:
+            maximum_lines = 2
+        for line_index, line in enumerate(lines[1:maximum_lines], start=1):
+            candidates.append(
+                (
+                    relevance - line_index,
+                    section_index,
+                    heading,
+                    line,
+                )
+            )
+
+    for _, _, heading, line in sorted(
+        candidates,
+        key=lambda item: (-item[0], item[1], item[2]),
+    ):
+        selected[heading].append(line)
+        candidate_summary = _render_banner_summary(
+            introduction,
+            readable_sections,
+            selected,
+        )
+        if len(candidate_summary) > max_chars:
+            selected[heading].pop()
+
+    summary = _render_banner_summary(
+        introduction,
+        readable_sections,
+        selected,
+    )
+    return _truncate_summary(summary, max_chars)
+
+
+def _context_keywords(approved_context: str) -> set[str]:
+    """Extract durable context terms useful for brief-section prioritization."""
+
+    stopwords = {
+        "about",
+        "additional",
+        "assistant",
+        "based",
+        "brief",
+        "built",
+        "current",
+        "daily",
+        "facts",
+        "james",
+        "local",
+        "morning",
+        "ongoing",
+        "prefer",
+        "project",
+        "stored",
+        "using",
+    }
+    return {
+        word
+        for word in re.findall(r"[a-z0-9]+", approved_context.casefold())
+        if len(word) >= 5 and word not in stopwords
+    }
+
+
+def _section_context_relevance(
+    heading: str,
+    lines: Sequence[str],
+    context_keywords: set[str],
+) -> int:
+    """Score a section by explicit overlap with approved context."""
+
+    section_words = set(
+        re.findall(
+            r"[a-z0-9]+",
+            f"{heading} {' '.join(lines)}".casefold(),
+        )
+    )
+    return len(section_words & context_keywords)
+
+
+def _render_banner_summary(
+    introduction: str,
+    readable_sections: Sequence[tuple[str, list[str]]],
+    selected: Mapping[str, list[str]],
+) -> str:
+    """Render selected lines while retaining the source section order."""
+
+    parts = [introduction]
+    for heading, _ in readable_sections:
+        lines = selected.get(heading, [])
+        if lines:
+            parts.append(f"{heading}: {' '.join(lines)}")
     return " ".join(parts)
 
 

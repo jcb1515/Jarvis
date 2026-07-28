@@ -64,6 +64,11 @@ interface SpeechPlaybackMetadata {
   voice: string;
 }
 
+interface PreparedSpeechChunk {
+  audio: Blob;
+  metadata: SpeechPlaybackMetadata;
+}
+
 interface PlaybackObserver {
   cancel: () => void;
   completion: Promise<void>;
@@ -72,6 +77,8 @@ interface PlaybackObserver {
 const SPEECH_STALL_CHECK_INTERVAL_MS = 500;
 const SPEECH_STALL_WINDOW_MS = 6_000;
 const PLAYBACK_PROGRESS_EPSILON_SECONDS = 0.02;
+const FIRST_SPEECH_CHUNK_MAX_CHARS = 180;
+const SPEECH_CHUNK_MAX_CHARS = 420;
 
 const MICROPHONE_CONSTRAINTS: MediaTrackConstraints = {
   autoGainControl: true,
@@ -301,6 +308,84 @@ const blobToDataUrl = async (blob: Blob): Promise<string> =>
     );
     reader.readAsDataURL(blob);
   });
+
+const splitSpeechText = (text: string): string[] => {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const chunks: string[] = [];
+  let current = '';
+  let limit = FIRST_SPEECH_CHUNK_MAX_CHARS;
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length > limit && current) {
+      chunks.push(current);
+      current = word;
+      limit = SPEECH_CHUNK_MAX_CHARS;
+      continue;
+    }
+    current = candidate;
+    const endsSentence = /[.!?]["')\]]?$/.test(word);
+    if (endsSentence && current.length >= limit * 0.65) {
+      chunks.push(current);
+      current = '';
+      limit = SPEECH_CHUNK_MAX_CHARS;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+};
+
+const prepareSpeechChunk = async (
+  text: string,
+): Promise<PreparedSpeechChunk> => {
+  const result = await openSpeechStream(text, '', 0.92);
+  const audio = await result.response.blob();
+  if (audio.size === 0) {
+    throw new Error('The synthesized speech response was empty.');
+  }
+  return {
+    audio,
+    metadata: {
+      backend: result.backend,
+      streaming: result.streaming,
+      voice: result.voice,
+    },
+  };
+};
+
+const playPreparedSpeechChunk = async (
+  prepared: PreparedSpeechChunk,
+  context: AudioContext,
+  analyser: AnalyserNode,
+  onPlaybackStart: () => void,
+): Promise<void> => {
+  const audio = new Audio();
+  const source = context.createMediaElementSource(audio);
+  source.connect(analyser);
+  const playback = createPlaybackObserver(
+    audio,
+    context,
+    prepared.metadata,
+    onPlaybackStart,
+  );
+
+  try {
+    audio.src = await blobToDataUrl(prepared.audio);
+    audio.load();
+    const playTask = startAudioPlayback(
+      audio,
+      context,
+      prepared.metadata,
+    ).then(() => playback.completion);
+    await Promise.race([playback.completion, playTask]);
+  } finally {
+    playback.cancel();
+    source.disconnect();
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+  }
+};
 
 const finalizeRecorderCapture = async (
   state: RecorderState,
@@ -680,69 +765,56 @@ export function useVoicePipeline() {
       text: string,
       options: SpeechPlaybackOptions,
     ): Promise<void> => {
-      const result = await openSpeechStream(text, '', 0.92);
-      const metadata: SpeechPlaybackMetadata = {
-        backend: result.backend,
-        streaming: result.streaming,
-        voice: result.voice,
-      };
-      setVoiceBackend(result.backend);
-
-      const audio = new Audio();
+      const chunks = splitSpeechText(text);
+      if (chunks.length === 0) return;
       const existingContext = outputContextRef.current;
       const context =
         existingContext && existingContext.state !== 'closed'
           ? existingContext
           : new AudioContext();
       outputContextRef.current = context;
-      const source = context.createMediaElementSource(audio);
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.8;
-      source.connect(analyser);
       analyser.connect(context.destination);
       outputAnalyserRef.current = analyser;
-
-      const playback = createPlaybackObserver(
-        audio,
-        context,
-        metadata,
-        () => {
-          setIsSpeaking(true);
-          options.onPlaybackStart();
-        },
-      );
+      let playbackStarted = false;
+      let preparedChunk = prepareSpeechChunk(chunks[0]);
 
       try {
-        const audioBlob = await result.response.blob();
-        if (audioBlob.size === 0) {
-          throw new Error('The synthesized speech response was empty.');
+        for (let index = 0; index < chunks.length; index += 1) {
+          const prepared = await preparedChunk;
+          setVoiceBackend(prepared.metadata.backend);
+          const nextChunk =
+            index + 1 < chunks.length
+              ? prepareSpeechChunk(chunks[index + 1])
+              : null;
+          await playPreparedSpeechChunk(
+            prepared,
+            context,
+            analyser,
+            () => {
+              setIsSpeaking(true);
+              if (playbackStarted) return;
+              playbackStarted = true;
+              options.onPlaybackStart();
+            },
+          );
+          if (nextChunk) preparedChunk = nextChunk;
         }
-        audio.src = await blobToDataUrl(audioBlob);
-        audio.load();
-        const playTask = startAudioPlayback(audio, context, metadata).then(
-          () => playback.completion,
-        );
-        await Promise.race([playback.completion, playTask]);
       } catch (caught) {
         const error = toError(caught, 'Synthesized speech playback failed.');
         console.error('JARVIS speech playback failed', {
-          ...metadata,
           contextState: context.state,
           error: error.message,
         });
         throw error;
       } finally {
-        playback.cancel();
         setIsSpeaking(false);
         if (outputAnalyserRef.current === analyser) {
           outputAnalyserRef.current = null;
         }
-        source.disconnect();
         analyser.disconnect();
-        audio.pause();
-        audio.removeAttribute('src');
-        audio.load();
       }
     },
     [],
