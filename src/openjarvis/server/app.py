@@ -209,6 +209,11 @@ def create_app(
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[
+            "X-Jarvis-TTS-Backend",
+            "X-Jarvis-TTS-Streaming",
+            "X-Jarvis-TTS-Voice",
+        ],
     )
 
     # Store dependencies in app state
@@ -225,6 +230,7 @@ def create_app(
     app.state.memory_backend = memory_backend
     app.state.memory_service = memory_service
     app.state.speech_backend = speech_backend
+    app.state.tts_backend = None
     app.state.agent_manager = agent_manager
     app.state.agent_scheduler = agent_scheduler
     app.state.daily_brief_service = None
@@ -237,6 +243,36 @@ def create_app(
     # Exposed so WebSocket handlers can authenticate the handshake (the HTTP
     # AuthMiddleware never sees WS upgrade requests). Empty = auth disabled.
     app.state.api_key = api_key
+
+    speech_config = getattr(config, "speech", None)
+    if speech_config is not None and speech_config.tts_backend == "kokoro":
+        from openjarvis.speech.kokoro_tts import KokoroTTSBackend
+
+        tts_backend = KokoroTTSBackend(device=speech_config.device)
+        app.state.tts_backend = tts_backend
+        voice_id = speech_config.tts_voice or "bm_george"
+
+        def _warm_kokoro() -> None:
+            try:
+                tts_backend.warm(voice_id)
+                logger.info(
+                    "Local Kokoro voice is ready",
+                    extra={"voice_id": voice_id},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Local Kokoro voice warmup failed",
+                    extra={
+                        "voice_id": voice_id,
+                        "error": str(exc),
+                    },
+                )
+
+        threading.Thread(
+            target=_warm_kokoro,
+            name="astrono-kokoro-warmup",
+            daemon=True,
+        ).start()
 
     workspace_config = getattr(config, "google_workspace", None)
     if workspace_config is not None and workspace_config.enabled:

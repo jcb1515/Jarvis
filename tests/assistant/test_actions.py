@@ -57,9 +57,85 @@ def test_resolve_action_routes_explicit_navigation() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Can you open Gmail and Chrome for me?",
+        "Please open Google Chrome and Gmail.",
+        "Could you open Gmail in Chrome?",
+        "Open Google Mail using Chrome please.",
+    ],
+)
+def test_resolve_action_routes_gmail_to_chrome(command: str) -> None:
+    assert resolve_action(command) == ActionRequest(
+        kind=ActionKind.OPEN_URL,
+        arguments={"url": "https://mail.google.com/", "label": "Gmail"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "url", "label"),
+    [
+        ("Open Claude's website.", "https://claude.ai/", "Claude"),
+        ("Open claudes website.", "https://claude.ai/", "Claude"),
+        ("Can you open Apple for me?", "https://www.apple.com/ca/", "Apple"),
+        (
+            "Please open the Best Buy website.",
+            "https://www.bestbuy.ca/",
+            "Best Buy",
+        ),
+    ],
+)
+def test_resolve_action_routes_known_named_websites(
+    command: str,
+    url: str,
+    label: str,
+) -> None:
+    assert resolve_action(command) == ActionRequest(
+        kind=ActionKind.OPEN_URL,
+        arguments={"url": url, "label": label},
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "query", "label"),
+    [
+        (
+            "Open Acme Robotics' website.",
+            "acme+robotics+official+website",
+            "a search for Acme Robotics' official website",
+        ),
+        (
+            "Open Reddit.",
+            "reddit+official+website",
+            "a search for Reddit's official website",
+        ),
+        (
+            "Can you open Ferguson Plumbing for me?",
+            "ferguson+plumbing+official+website",
+            "a search for Ferguson Plumbing's official website",
+        ),
+    ],
+)
+def test_resolve_action_searches_for_unknown_named_website(
+    command: str,
+    query: str,
+    label: str,
+) -> None:
+    assert resolve_action(command) == ActionRequest(
+        kind=ActionKind.OPEN_URL,
+        arguments={
+            "url": f"https://www.google.com/search?q={query}",
+            "label": label,
+        },
+    )
+
+
 def test_resolve_action_does_not_hijack_conversation() -> None:
     assert resolve_action("How do I open a website in Chrome?") is None
+    assert resolve_action("How do I open Gmail and Chrome?") is None
     assert resolve_action("Open the discussion about browser security") is None
+    assert resolve_action("Open PowerShell") is None
     assert resolve_action("What is a daily brief?") is None
 
 
@@ -86,11 +162,27 @@ def test_resolve_action_routes_explicit_daily_brief_date() -> None:
     )
 
 
-def test_resolve_action_limits_applications_to_allowlist() -> None:
-    assert resolve_action("launch Obsidian") == ActionRequest(
+@pytest.mark.parametrize(
+    ("command", "application"),
+    [
+        ("launch Obsidian", "obsidian"),
+        ("Can you open Chrome for me?", "chrome"),
+        ("Could you please launch Google Chrome?", "chrome"),
+        ("I want you to open the Obsidian app.", "obsidian"),
+        ("Would you start up the Chrome application please?", "chrome"),
+    ],
+)
+def test_resolve_action_limits_applications_to_allowlist(
+    command: str,
+    application: str,
+) -> None:
+    assert resolve_action(command) == ActionRequest(
         kind=ActionKind.OPEN_APPLICATION,
-        arguments={"application": "obsidian"},
+        arguments={"application": application},
     )
+
+
+def test_resolve_action_rejects_unallowlisted_applications() -> None:
     assert resolve_action("launch powershell") is None
 
 

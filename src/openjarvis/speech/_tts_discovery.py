@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 def _create_backend(
     backend_key: str,
     config: "JarvisConfig",
+    kokoro_backend: "TTSBackend | None",
 ) -> "TTSBackend":
     """Create a configured TTS backend or raise an actionable error."""
     import openjarvis.speech  # noqa: F401
@@ -36,6 +37,8 @@ def _create_backend(
             )
         return backend_class(api_key=api_key)
     if backend_key == "kokoro":
+        if kokoro_backend is not None:
+            return kokoro_backend
         return backend_class(device=config.speech.device)
     return backend_class()
 
@@ -57,12 +60,13 @@ def synthesize_with_fallback(
     requested_backend: str,
     voice_id: str,
     speed: float,
+    kokoro_backend: "TTSBackend | None",
 ) -> Tuple[str, "TTSResult"]:
     """Synthesize speech, falling back from ElevenLabs to local Kokoro."""
     last_error: Exception | None = None
     for backend_key in _candidate_keys(config, requested_backend):
         try:
-            backend = _create_backend(backend_key, config)
+            backend = _create_backend(backend_key, config, kokoro_backend)
             resolved_voice = voice_id
             if not resolved_voice and backend_key == "kokoro":
                 resolved_voice = config.speech.tts_voice or "bm_george"
@@ -100,12 +104,13 @@ def stream_with_fallback(
     requested_backend: str,
     voice_id: str,
     speed: float,
+    kokoro_backend: "TTSBackend | None",
 ) -> Tuple[str, str, str, Iterator[bytes]]:
     """Open streaming ElevenLabs audio or return one local Kokoro WAV chunk."""
     last_error: Exception | None = None
     for backend_key in _candidate_keys(config, requested_backend):
         try:
-            backend = _create_backend(backend_key, config)
+            backend = _create_backend(backend_key, config, kokoro_backend)
             if backend_key == "elevenlabs":
                 resolved_voice, chunks = backend.stream_synthesize(
                     text,

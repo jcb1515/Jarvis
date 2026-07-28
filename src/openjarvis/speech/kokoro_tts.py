@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import threading
 from typing import Any, List
 
 from openjarvis.core.registry import TTSRegistry
@@ -37,6 +38,7 @@ class KokoroTTSBackend(TTSBackend):
         self._device = device
         self._pipeline: Any | None = None
         self._language_code: str | None = None
+        self._lock = threading.RLock()
 
     def _ensure_pipeline(self, voice_id: str) -> None:
         language_code = _english_language_code(voice_id)
@@ -45,7 +47,12 @@ class KokoroTTSBackend(TTSBackend):
         try:
             from kokoro import KPipeline
 
-            self._pipeline = KPipeline(lang_code=language_code)
+            device = None if self._device == "auto" else self._device
+            self._pipeline = KPipeline(
+                lang_code=language_code,
+                repo_id="hexgrad/Kokoro-82M",
+                device=device,
+            )
             self._language_code = language_code
         except ImportError as exc:
             raise RuntimeError(
@@ -57,6 +64,12 @@ class KokoroTTSBackend(TTSBackend):
                 "Install the spaCy model en_core_web_sm in the project environment."
             ) from exc
 
+    def warm(self, voice_id: str) -> None:
+        """Load the configured language pipeline and voice into memory."""
+        with self._lock:
+            self._ensure_pipeline(voice_id)
+            self._pipeline.load_voice(voice_id)
+
     def synthesize(
         self,
         text: str,
@@ -65,13 +78,19 @@ class KokoroTTSBackend(TTSBackend):
         speed: float = 1.0,
         output_format: str = "wav",
     ) -> TTSResult:
-        self._ensure_pipeline(voice_id)
-        import numpy as np
-        import soundfile as sf
+        with self._lock:
+            self._ensure_pipeline(voice_id)
+            import numpy as np
+            import soundfile as sf
 
-        samples = []
-        for _, _, audio in self._pipeline(text, voice=voice_id, speed=speed):
-            samples.append(audio)
+            samples = [
+                audio
+                for _, _, audio in self._pipeline(
+                    text,
+                    voice=voice_id,
+                    speed=speed,
+                )
+            ]
 
         if not samples:
             return TTSResult(audio=b"", format=output_format, voice_id=voice_id)

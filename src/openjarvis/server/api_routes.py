@@ -1338,6 +1338,7 @@ async def synthesize_speech(
             requested_backend=payload.backend,
             voice_id=payload.voice_id,
             speed=payload.speed,
+            kokoro_backend=getattr(request.app.state, "tts_backend", None),
         )
     except Exception as exc:
         logger.exception("Speech synthesis failed")
@@ -1394,6 +1395,7 @@ async def stream_synthesized_speech(
             requested_backend=payload.backend,
             voice_id=payload.voice_id,
             speed=payload.speed,
+            kokoro_backend=getattr(request.app.state, "tts_backend", None),
         )
     except Exception as exc:
         logger.exception("Streaming speech synthesis failed")
