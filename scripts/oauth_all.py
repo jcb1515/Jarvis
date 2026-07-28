@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from openjarvis.connectors.oauth import GOOGLE_ALL_SCOPES
 from openjarvis.core import open_browser
 
 CONFIG_DIR = Path.home() / ".openjarvis" / "connectors"
@@ -125,14 +126,13 @@ def _save(path: Path, data: Dict[str, Any]) -> None:
 
 def do_google() -> None:
     print("\n=== Google OAuth (Drive, Calendar, Contacts, Gmail, Tasks) ===")
-    scopes = [
-        "openid", "email", "profile",
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/calendar.readonly",
-        "https://www.googleapis.com/auth/contacts.readonly",
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/tasks.readonly",
-    ]
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise RuntimeError(
+            "Google OAuth Desktop credentials are missing. Set "
+            "OPENJARVIS_GOOGLE_CLIENT_ID and OPENJARVIS_GOOGLE_CLIENT_SECRET "
+            "or store them in ~/.openjarvis/connectors/google.json."
+        )
+    scopes = GOOGLE_ALL_SCOPES
     url = (
         "https://accounts.google.com/o/oauth2/v2/auth?"
         + urlencode({
@@ -167,6 +167,7 @@ def do_google() -> None:
         "refresh_token": tokens.get("refresh_token", ""),
         "token_type": tokens.get("token_type", "Bearer"),
         "expires_in": tokens.get("expires_in", 3600),
+        "scope": scopes,
         "client_id": GOOGLE_CLIENT_ID,
         "client_secret": GOOGLE_CLIENT_SECRET,
     }

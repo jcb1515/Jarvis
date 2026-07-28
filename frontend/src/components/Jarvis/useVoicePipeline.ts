@@ -270,28 +270,37 @@ const startAudioPlayback = async (
   }
 };
 
-const appendSourceBuffer = async (
-  sourceBuffer: SourceBuffer,
-  chunk: Uint8Array,
-): Promise<void> => {
-  await new Promise<void>((resolve, reject) => {
-    const cleanup = (): void => {
-      sourceBuffer.removeEventListener('updateend', handleUpdateEnd);
-      sourceBuffer.removeEventListener('error', handleError);
-    };
-    const handleUpdateEnd = (): void => {
-      cleanup();
-      resolve();
-    };
-    const handleError = (): void => {
-      cleanup();
-      reject(new Error('Could not buffer streamed voice audio.'));
-    };
-    sourceBuffer.addEventListener('updateend', handleUpdateEnd);
-    sourceBuffer.addEventListener('error', handleError);
-    sourceBuffer.appendBuffer(chunk.slice().buffer);
+const blobToDataUrl = async (blob: Blob): Promise<string> =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener(
+      'load',
+      () => {
+        if (typeof reader.result !== 'string') {
+          reject(
+            new Error(
+              'The synthesized audio could not be converted to a playable data URL.',
+            ),
+          );
+          return;
+        }
+        resolve(reader.result);
+      },
+      { once: true },
+    );
+    reader.addEventListener(
+      'error',
+      () => {
+        reject(
+          new Error(
+            `The synthesized audio could not be read: ${reader.error?.message ?? 'unknown FileReader error'}`,
+          ),
+        );
+      },
+      { once: true },
+    );
+    reader.readAsDataURL(blob);
   });
-};
 
 const finalizeRecorderCapture = async (
   state: RecorderState,
@@ -694,8 +703,6 @@ export function useVoicePipeline() {
       analyser.connect(context.destination);
       outputAnalyserRef.current = analyser;
 
-      let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-      let audioUrl = '';
       const playback = createPlaybackObserver(
         audio,
         context,
@@ -707,74 +714,16 @@ export function useVoicePipeline() {
       );
 
       try {
-        if (result.streaming) {
-          const streamBody = result.response.body;
-          if (!streamBody) {
-            throw new Error('ElevenLabs returned an empty streaming response.');
-          }
-          if (!MediaSource.isTypeSupported('audio/mpeg')) {
-            throw new Error(
-              'This browser cannot stream MPEG audio with MediaSource.',
-            );
-          }
-          const mediaSource = new MediaSource();
-          audioUrl = URL.createObjectURL(mediaSource);
-          audio.src = audioUrl;
-          const reader = streamBody.getReader();
-          activeReader = reader;
-          const streamTask = (async (): Promise<void> => {
-            await new Promise<void>((resolve) => {
-              mediaSource.addEventListener('sourceopen', () => resolve(), {
-                once: true,
-              });
-            });
-            const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-            let playbackRequested = false;
-            let playbackAttempt: Promise<void> | null = null;
-            let playbackError: Error | null = null;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              await appendSourceBuffer(sourceBuffer, value);
-              if (!playbackRequested) {
-                playbackRequested = true;
-                playbackAttempt = startAudioPlayback(
-                  audio,
-                  context,
-                  metadata,
-                ).catch((caught) => {
-                  playbackError = toError(
-                    caught,
-                    'The streamed audio play request failed.',
-                  );
-                });
-              }
-            }
-            if (!playbackAttempt) {
-              throw new Error(
-                'The streaming speech response contained no audio bytes.',
-              );
-            }
-            if (mediaSource.readyState === 'open') mediaSource.endOfStream();
-            await playbackAttempt;
-            if (playbackError) throw playbackError;
-          })();
-          await Promise.race([
-            playback.completion,
-            streamTask.then(() => playback.completion),
-          ]);
-        } else {
-          const audioBlob = await result.response.blob();
-          if (audioBlob.size === 0) {
-            throw new Error('The synthesized speech response was empty.');
-          }
-          audioUrl = URL.createObjectURL(audioBlob);
-          audio.src = audioUrl;
-          const playTask = startAudioPlayback(audio, context, metadata).then(
-            () => playback.completion,
-          );
-          await Promise.race([playback.completion, playTask]);
+        const audioBlob = await result.response.blob();
+        if (audioBlob.size === 0) {
+          throw new Error('The synthesized speech response was empty.');
         }
+        audio.src = await blobToDataUrl(audioBlob);
+        audio.load();
+        const playTask = startAudioPlayback(audio, context, metadata).then(
+          () => playback.completion,
+        );
+        await Promise.race([playback.completion, playTask]);
       } catch (caught) {
         const error = toError(caught, 'Synthesized speech playback failed.');
         console.error('JARVIS speech playback failed', {
@@ -785,9 +734,6 @@ export function useVoicePipeline() {
         throw error;
       } finally {
         playback.cancel();
-        if (activeReader) {
-          await activeReader.cancel('Speech playback lifecycle completed.');
-        }
         setIsSpeaking(false);
         if (outputAnalyserRef.current === analyser) {
           outputAnalyserRef.current = null;
@@ -797,7 +743,6 @@ export function useVoicePipeline() {
         audio.pause();
         audio.removeAttribute('src');
         audio.load();
-        if (audioUrl) URL.revokeObjectURL(audioUrl);
       }
     },
     [],

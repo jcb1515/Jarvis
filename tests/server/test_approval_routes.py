@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from openjarvis.core.types import ToolResult
+from openjarvis.tools.approval_execution import (
+    clear_approval_handlers,
+    register_approval_handler,
+)
 from openjarvis.tools.approval_store import (
     STATUS_APPROVED,
     STATUS_DENIED,
+    STATUS_EXECUTED,
     STATUS_PENDING,
     TIER_HIGH,
     TIER_LOW,
@@ -36,7 +42,9 @@ def approval_store(tmp_path):
     store = ApprovalStore(db_path=str(tmp_path / "approvals.db"))
     original = ar._store
     ar._store = store
+    clear_approval_handlers()
     yield store
+    clear_approval_handlers()
     ar._store = original
     store.close()
 
@@ -226,6 +234,78 @@ class TestApproveAction:
         body = resp.json()
         assert body["count"] == 1
         assert body["actions"][0]["id"] == id_b
+
+    def test_approve_executes_exact_stored_arguments_once(
+        self,
+        client,
+        approval_store,
+    ):
+        calls = []
+
+        def execute(arguments):
+            calls.append(arguments)
+            return ToolResult(
+                tool_name="calendar_create",
+                content="Created event",
+                success=True,
+            )
+
+        register_approval_handler("google:calendar_create", execute)
+        action_id = _queue(
+            approval_store,
+            action_type="calendar_create",
+            payload={
+                "tool": "calendar_create",
+                "server": "google",
+                "execution_key": "google:calendar_create",
+                "arguments": {"title": "Astrono smoke test", "date": "2026-07-28"},
+            },
+        )
+
+        first = client.post(f"/v1/approvals/{action_id}/approve")
+        second = client.post(f"/v1/approvals/{action_id}/approve")
+
+        assert first.json()["status"] == "executed"
+        assert second.json()["execution_status"] == "already_executed"
+        assert calls == [{"title": "Astrono smoke test", "date": "2026-07-28"}]
+        assert approval_store.get_action(action_id).status == STATUS_EXECUTED
+
+    def test_failed_approved_action_remains_retryable(
+        self,
+        client,
+        approval_store,
+    ):
+        attempts = []
+
+        def execute(arguments):
+            attempts.append(arguments)
+            return ToolResult(
+                tool_name="gmail_send",
+                content="Provider unavailable",
+                success=False,
+            )
+
+        register_approval_handler("google:gmail_send", execute)
+        action_id = _queue(
+            approval_store,
+            action_type="gmail_send",
+            payload={
+                "tool": "gmail_send",
+                "server": "google",
+                "execution_key": "google:gmail_send",
+                "arguments": {"to": "self@example.com", "subject": "Test"},
+            },
+        )
+
+        response = client.post(f"/v1/approvals/{action_id}/approve")
+
+        assert response.json()["execution_status"] == "retryable"
+        assert len(attempts) == 1
+        assert approval_store.get_action(action_id).status == STATUS_APPROVED
+        pending = client.get("/v1/approvals/pending").json()
+        assert pending["count"] == 1
+        assert pending["actions"][0]["id"] == action_id
+        assert pending["actions"][0]["status"] == STATUS_APPROVED
 
 
 @pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")

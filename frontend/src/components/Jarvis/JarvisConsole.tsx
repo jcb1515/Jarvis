@@ -37,6 +37,16 @@ interface ListeningSessionOptions {
   prompt: string;
 }
 
+interface ParsedDelta {
+  content: string;
+  reasoningContent: string;
+}
+
+interface ResolvedThinkingCommand {
+  command: string;
+  think: boolean;
+}
+
 const DEMO_TRANSCRIPT = [
   {
     speaker: 'YOU',
@@ -63,11 +73,32 @@ const DEMO_APPROVAL: PendingApproval = {
 const messageId = (): string =>
   `${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
 
-const parseDelta = (data: string): string => {
+const parseDelta = (data: string): ParsedDelta => {
   const parsed = JSON.parse(data) as {
-    choices?: Array<{ delta?: { content?: string } }>;
+    choices?: Array<{
+      delta?: { content?: string; reasoning_content?: string };
+    }>;
   };
-  return parsed.choices?.[0]?.delta?.content ?? '';
+  return {
+    content: parsed.choices?.[0]?.delta?.content ?? '',
+    reasoningContent:
+      parsed.choices?.[0]?.delta?.reasoning_content ?? '',
+  };
+};
+
+const resolveThinkingCommand = (
+  rawCommand: string,
+  persistentThinking: boolean,
+): ResolvedThinkingCommand => {
+  const manualTrigger =
+    /^\s*(?:think carefully about this|use thinking mode)\s*[:,.-]?\s*/i;
+  const triggered = manualTrigger.test(rawCommand);
+  return {
+    command: triggered
+      ? rawCommand.replace(manualTrigger, '').trim()
+      : rawCommand.trim(),
+    think: persistentThinking || triggered,
+  };
 };
 
 const formatElapsed = (elapsedMs: number): string =>
@@ -129,6 +160,14 @@ export function JarvisConsole() {
   const [wakeFlash, setWakeFlash] = useState(false);
   const [listeningAutomatically, setListeningAutomatically] = useState(false);
   const [conversationActive, setConversationActive] = useState(false);
+  const [thinkingMode, setThinkingMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('astrono-jarvis-thinking-mode') === 'thinking';
+    } catch {
+      return false;
+    }
+  });
+  const [reasoningTrace, setReasoningTrace] = useState('');
   const [approvals, setApprovals] = useState<PendingApproval[]>(
     isDemo ? [DEMO_APPROVAL] : [],
   );
@@ -143,6 +182,19 @@ export function JarvisConsole() {
   const handledWakeSequenceRef = useRef(0);
   const stageRef = useRef<JarvisStage>(stage);
   const voice = useVoicePipeline();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'astrono-jarvis-thinking-mode',
+        thinkingMode ? 'thinking' : 'instant',
+      );
+    } catch (caught) {
+      console.warn('Could not persist the JARVIS thinking preference', {
+        error: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }, [thinkingMode]);
 
   const transcript = useMemo(() => {
     if (isDemo && sessionMessages.length === 0) return DEMO_TRANSCRIPT;
@@ -322,14 +374,17 @@ export function JarvisConsole() {
 
   const executeCommand = useCallback(
     async (rawCommand: string): Promise<void> => {
-      const text = rawCommand.trim();
+      const resolvedCommand = resolveThinkingCommand(rawCommand, thinkingMode);
+      const text = resolvedCommand.command;
       if (!text) {
         deactivateConversation();
+        setError('Thinking mode needs a question or command.');
         transitionToStage('READY');
         return;
       }
       clearConversationDeadline();
       setError('');
+      setReasoningTrace('');
       setCommand('');
       setPartialTranscript(text);
       const userMessage: ChatMessage = {
@@ -386,6 +441,8 @@ export function JarvisConsole() {
               stream: true,
               temperature: settings.temperature,
               max_tokens: settings.maxTokens,
+              think: resolvedCommand.think,
+              tool_mode: 'auto',
             },
             chatController.signal,
           )) {
@@ -397,11 +454,16 @@ export function JarvisConsole() {
             }
             try {
               const delta = parseDelta(event.data);
-              response += delta;
+              response += delta.content;
+              if (delta.reasoningContent) {
+                setReasoningTrace((current) =>
+                  `${current}${delta.reasoningContent}`.slice(-8_000),
+                );
+              }
               updateSessionAssistant(response);
-              if (delta) {
+              if (delta.content || delta.reasoningContent) {
                 armChatTimeout(
-                  'The local model stopped producing response tokens for 12 seconds.',
+                  'The local model stopped producing tokens for 12 seconds.',
                   CHAT_TOKEN_STALL_TIMEOUT_MS,
                 );
               }
@@ -460,6 +522,7 @@ export function JarvisConsole() {
       sessionMessages,
       settings.maxTokens,
       settings.temperature,
+      thinkingMode,
       transitionToStage,
       updateSessionAssistant,
       voice.speak,
@@ -685,15 +748,61 @@ export function JarvisConsole() {
       setApprovals([]);
       return;
     }
-    if (approved) await approveAction(approval.id);
-    else await denyAction(approval.id);
-    await refreshApprovals();
-    if (approved) {
+    try {
+      if (!approved) {
+        await denyAction(approval.id);
+        await refreshApprovals();
+        return;
+      }
       transitionToStage('THINKING');
-      await executeCommand(
-        `I explicitly approve pending action ${approval.id}. Continue the ` +
-          'same action exactly as proposed.',
-      );
+      const execution = await approveAction(approval.id);
+      await refreshApprovals();
+      const executionMessage =
+        execution.result?.content ??
+        (execution.execution_status === 'already_executed'
+          ? 'That exact action was already executed.'
+          : 'The approved action completed.');
+      setSessionMessages((current) => [
+        ...current,
+        {
+          id: messageId(),
+          role: 'assistant',
+          content: executionMessage,
+          timestamp: Date.now(),
+        },
+      ]);
+      if (execution.execution_status === 'retryable') {
+        setError(executionMessage);
+        transitionToStage('ERROR');
+        return;
+      }
+      try {
+        await voice.speak(executionMessage, {
+          onPlaybackStart: () => transitionToStage('SPEAKING'),
+        });
+      } catch (caught) {
+        const detail =
+          caught instanceof Error
+            ? caught.message
+            : 'Synthesized speech playback failed.';
+        console.error(
+          'JARVIS recovered from approval speech playback failure',
+          {
+            approvalId: approval.id,
+            error: detail,
+            recoveryStage: 'READY',
+          },
+        );
+        setError(`Speech playback: ${detail}`);
+      }
+      transitionToStage('READY');
+    } catch (caught) {
+      const detail =
+        caught instanceof Error
+          ? caught.message
+          : 'The approval request failed unexpectedly.';
+      setError(`Approval ${approval.id}: ${detail}`);
+      transitionToStage('ERROR');
     }
   };
 
@@ -807,26 +916,51 @@ export function JarvisConsole() {
 
         <section className="jarvis-core">
           <div className="jarvis-visualizer-toolbar">
-            <span>CELESTIAL ENGINE</span>
-            <div
-              aria-label="JARVIS visualizer mode"
-              className="jarvis-mode-toggle"
-              role="group"
-            >
-              <button
-                aria-pressed={cosmicMode === 'BLACK_HOLE'}
-                onClick={() => setCosmicMode('BLACK_HOLE')}
-                type="button"
+            <div className="jarvis-toolbar-group">
+              <span>CELESTIAL ENGINE</span>
+              <div
+                aria-label="JARVIS visualizer mode"
+                className="jarvis-mode-toggle"
+                role="group"
               >
-                BLACK HOLE
-              </button>
-              <button
-                aria-pressed={cosmicMode === 'SOLAR_SYSTEM'}
-                onClick={() => setCosmicMode('SOLAR_SYSTEM')}
-                type="button"
+                <button
+                  aria-pressed={cosmicMode === 'BLACK_HOLE'}
+                  onClick={() => setCosmicMode('BLACK_HOLE')}
+                  type="button"
+                >
+                  BLACK HOLE
+                </button>
+                <button
+                  aria-pressed={cosmicMode === 'SOLAR_SYSTEM'}
+                  onClick={() => setCosmicMode('SOLAR_SYSTEM')}
+                  type="button"
+                >
+                  SOLAR SYSTEM
+                </button>
+              </div>
+            </div>
+            <div className="jarvis-toolbar-group">
+              <span>COGNITION</span>
+              <div
+                aria-label="JARVIS thinking mode"
+                className="jarvis-mode-toggle"
+                role="group"
               >
-                SOLAR SYSTEM
-              </button>
+                <button
+                  aria-pressed={!thinkingMode}
+                  onClick={() => setThinkingMode(false)}
+                  type="button"
+                >
+                  INSTANT
+                </button>
+                <button
+                  aria-pressed={thinkingMode}
+                  onClick={() => setThinkingMode(true)}
+                  type="button"
+                >
+                  THINKING
+                </button>
+              </div>
             </div>
           </div>
 
@@ -838,6 +972,15 @@ export function JarvisConsole() {
             <span>{formatPhaseLabel(stage, visibleElapsedMs)}</span>
             <p>{statusDetail()}</p>
           </div>
+
+          {reasoningTrace && (
+            <details className="jarvis-reasoning" open>
+              <summary>
+                <Brain size={14} /> THINKING TRACE
+              </summary>
+              <p>{reasoningTrace}</p>
+            </details>
+          )}
 
           {wakeFlash && (
             <div className="jarvis-wake-cue" role="status">
@@ -857,7 +1000,10 @@ export function JarvisConsole() {
             </div>
             {approvals.slice(0, 1).map((approval) => (
               <article key={approval.id}>
-                <small>{approval.action_type.replace(/_/g, ' ')}</small>
+                <small>
+                  {approval.action_type.replace(/_/g, ' ')}
+                  {approval.status === 'approved' ? ' · retryable' : ''}
+                </small>
                 <p>{approval.description}</p>
                 <div>
                   <button
@@ -870,7 +1016,8 @@ export function JarvisConsole() {
                     type="button"
                     onClick={() => void handleApproval(approval, true)}
                   >
-                    <Check size={14} /> APPROVE
+                    <Check size={14} />
+                    {approval.status === 'approved' ? 'RETRY' : 'APPROVE'}
                   </button>
                 </div>
               </article>
@@ -949,7 +1096,12 @@ export function JarvisConsole() {
             {voice.vadActive ? 'SPEECH' : 'QUIET'}
           </span>
           <span>
-            <ArrowClockwise size={13} /> ELEVENLABS → KOKORO
+            <ArrowClockwise size={13} />{' '}
+            {voice.voiceBackend === 'elevenlabs'
+              ? 'ELEVENLABS'
+              : voice.voiceBackend === 'kokoro'
+                ? 'KOKORO LOCAL'
+                : 'KOKORO READY'}
           </span>
           <span>
             <Cpu size={13} /> {activeModel}

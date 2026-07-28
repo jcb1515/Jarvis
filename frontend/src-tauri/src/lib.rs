@@ -8,8 +8,17 @@ use tokio::sync::Mutex;
 
 const OLLAMA_PORT: u16 = 11434;
 const JARVIS_PORT: u16 = 8000;
+const JARVIS_HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DESKTOP_UV_SYNC_COMMAND: &str =
     "uv sync --extra desktop --extra inference-cloud --extra inference-google --group desktop-native";
+
+#[cfg(target_os = "windows")]
+fn prepare_std_subprocess(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
 
 /// Small, fast model used when startup needs a default Ollama tag.
 const STARTUP_MODEL: &str = "qwen3.5:4b";
@@ -60,10 +69,10 @@ fn total_ram_gb() -> f64 {
     {
         use std::process::Command;
         // wmic returns TotalVisibleMemorySize in KB
-        if let Ok(output) = Command::new("wmic")
-            .args(["OS", "get", "TotalVisibleMemorySize", "/value"])
-            .output()
-        {
+        let mut command = Command::new("wmic");
+        command.args(["OS", "get", "TotalVisibleMemorySize", "/value"]);
+        prepare_std_subprocess(&mut command);
+        if let Ok(output) = command.output() {
             if let Ok(s) = String::from_utf8(output.stdout) {
                 for line in s.lines() {
                     if let Some(val) = line.strip_prefix("TotalVisibleMemorySize=") {
@@ -203,7 +212,7 @@ fn resolve_bin(name: &str) -> String {
         let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
         let programfiles = std::env::var("ProgramFiles").unwrap_or_default();
         let programfiles_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
-        vec![
+        let mut candidates = vec![
             // Git for Windows — standard install paths
             format!("{programfiles}\\Git\\cmd\\{name}.exe"),
             format!("{programfiles_x86}\\Git\\cmd\\{name}.exe"),
@@ -220,7 +229,14 @@ fn resolve_bin(name: &str) -> String {
             format!("{localappdata}\\Programs\\Ollama\\{name}.exe"),
             // uv installs via pip/pipx
             format!("{home}\\AppData\\Roaming\\Python\\Scripts\\{name}.exe"),
-        ]
+        ];
+        if name == "uv" {
+            candidates.push(format!(
+                "{localappdata}\\Microsoft\\WinGet\\Packages\\\
+                 astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\\uv.exe"
+            ));
+        }
+        candidates
     };
 
     for path in &candidates {
@@ -233,10 +249,10 @@ fn resolve_bin(name: &str) -> String {
     // On Windows this uses `where.exe`, on Unix `which`.
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("where")
-            .arg(format!("{name}.exe"))
-            .output()
-        {
+        let mut command = std::process::Command::new("where");
+        command.arg(format!("{name}.exe"));
+        prepare_std_subprocess(&mut command);
+        if let Ok(output) = command.output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(first_line) = stdout.lines().next() {
@@ -294,6 +310,8 @@ fn find_project_root() -> Option<std::path::PathBuf> {
     // 3. Fallback: well-known direct paths
     let home = home_dir();
     let direct = [
+        format!("{home}/Downloads/Jarvis/Jarvis"),
+        format!("{home}/Downloads/Jarvis"),
         format!("{home}/OpenJarvis"),
         format!("{home}/projects/hazy/OpenJarvis"),
         format!("{home}/projects/OpenJarvis"),
@@ -552,7 +570,7 @@ async fn wait_for_jarvis_health(
     backend: &SharedBackend,
 ) -> JarvisStartResult {
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(JARVIS_HEALTH_REQUEST_TIMEOUT)
         .build()
     {
         Ok(c) => c,
@@ -647,9 +665,18 @@ fn matching_installed_model(models: &[String], requested: &str) -> Option<String
 
 fn model_name_looks_embedding_only(model: &str) -> bool {
     let name = model.to_ascii_lowercase();
-    ["embed", "embedding", "rerank", "minilm", "bge-", "bge_", "e5-", "e5_"]
-        .iter()
-        .any(|marker| name.contains(marker))
+    [
+        "embed",
+        "embedding",
+        "rerank",
+        "minilm",
+        "bge-",
+        "bge_",
+        "e5-",
+        "e5_",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
 }
 
 fn preferred_installed_model(models: &[String]) -> Option<String> {
@@ -718,18 +745,19 @@ async fn pull_model(model: &str) -> Result<(), String> {
 fn uv_sync_stderr_tail(stderr: &str, max_chars: usize) -> String {
     let total = stderr.chars().count();
     let skip = total.saturating_sub(max_chars);
-    stderr.chars().skip(skip).collect::<String>().trim().to_string()
+    stderr
+        .chars()
+        .skip(skip)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Error message shown when `uv sync` runs but exits non-zero (#331).
 ///
 /// `exit_code` is `None` when the process was terminated by a signal with
 /// no exit code (rendered as "unknown" rather than a misleading -1).
-fn format_uv_sync_failure(
-    root: &std::path::Path,
-    exit_code: Option<i32>,
-    stderr: &str,
-) -> String {
+fn format_uv_sync_failure(root: &std::path::Path, exit_code: Option<i32>, stderr: &str) -> String {
     let code = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "unknown".to_string());
@@ -782,6 +810,86 @@ fn prepare_subprocess_for_appimage(cmd: &mut tokio::process::Command) {
             cmd.env_remove("ARGV0");
         }
     }
+}
+
+fn prepare_subprocess(cmd: &mut tokio::process::Command) {
+    prepare_subprocess_for_appimage(cmd);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn valid_environment_key(key: &str) -> bool {
+    let mut characters = key.chars();
+    match characters.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn parse_project_env(content: &str) -> Result<Vec<(String, String)>, String> {
+    let mut variables = Vec::new();
+    for (line_index, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let assignment = line.strip_prefix("export ").unwrap_or(line);
+        let Some((raw_key, raw_value)) = assignment.split_once('=') else {
+            return Err(format!(
+                "Invalid .env assignment on line {}.",
+                line_index + 1
+            ));
+        };
+        let key = raw_key.trim();
+        if !valid_environment_key(key) {
+            return Err(format!(
+                "Invalid .env variable name on line {}.",
+                line_index + 1
+            ));
+        }
+        let trimmed_value = raw_value.trim();
+        let value = if trimmed_value.len() >= 2
+            && ((trimmed_value.starts_with('"') && trimmed_value.ends_with('"'))
+                || (trimmed_value.starts_with('\'') && trimmed_value.ends_with('\'')))
+        {
+            trimmed_value[1..trimmed_value.len() - 1].to_string()
+        } else {
+            trimmed_value.to_string()
+        };
+        variables.push((key.to_string(), value));
+    }
+    Ok(variables)
+}
+
+fn load_project_environment(
+    root: &std::path::Path,
+) -> Result<(std::path::PathBuf, Vec<(String, String)>), String> {
+    let config_path = root.join("configs").join("jarvis-assistant.toml");
+    if !config_path.is_file() {
+        return Err(format!(
+            "Astrono Jarvis configuration is missing at {}.",
+            config_path.display()
+        ));
+    }
+
+    let env_path = root.join(".env");
+    let variables = if env_path.is_file() {
+        let content = std::fs::read_to_string(&env_path).map_err(|error| {
+            format!(
+                "Could not read local environment configuration at {}: {}",
+                env_path.display(),
+                error
+            )
+        })?;
+        parse_project_env(&content)?
+    } else {
+        Vec::new()
+    };
+    Ok((config_path, variables))
 }
 
 /// Error message shown when `uv sync` can't even be spawned (#331) —
@@ -868,7 +976,7 @@ async fn verify_openjarvis_rust_extension(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .current_dir(root);
-    prepare_subprocess_for_appimage(&mut cmd);
+    prepare_subprocess(&mut cmd);
     add_cargo_bin_to_path(&mut cmd);
 
     match cmd.output().await {
@@ -884,6 +992,32 @@ async fn verify_openjarvis_rust_extension(
     }
 }
 
+async fn desktop_environment_ready(root: &std::path::Path, uv_bin: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let venv_python = root.join(".venv").join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let venv_python = root.join(".venv").join("bin").join("python");
+
+    if !venv_python.is_file() {
+        return false;
+    }
+
+    let mut cmd = tokio::process::Command::new(uv_bin);
+    cmd.args([
+        "run",
+        "python",
+        "-c",
+        "import fastapi; import openjarvis; import openjarvis_rust; import uvicorn",
+    ])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .current_dir(root);
+    prepare_subprocess(&mut cmd);
+    add_cargo_bin_to_path(&mut cmd);
+
+    matches!(cmd.status().await, Ok(status) if status.success())
+}
+
 fn port_owner_hint() -> String {
     if cfg!(target_os = "windows") {
         format!("netstat -ano | findstr :{}", JARVIS_PORT)
@@ -895,7 +1029,7 @@ fn port_owner_hint() -> String {
 fn format_port_unavailable(port: u16, reason: &str) -> String {
     format!(
         "Port {} is not available: {}. Stop the process using that port or \
-         change the OpenJarvis port, then relaunch.\n\nTo identify it:\n  {}",
+         change the Astrono Jarvis port, then relaunch.\n\nTo identify it:\n  {}",
         port,
         reason,
         port_owner_hint(),
@@ -952,7 +1086,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
             // Avoid LD_LIBRARY_PATH leak when running inside an AppImage (#455).
-            prepare_subprocess_for_appimage(&mut sidecar_cmd);
+            prepare_subprocess(&mut sidecar_cmd);
             match sidecar_cmd.spawn() {
                 Ok(child) => Some(child),
                 Err(_) => None,
@@ -989,7 +1123,9 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
         }
 
         let installed_models = ollama_model_names().await;
-        let resolved_model = if let Some(installed) = startup_installed_model(&model, &installed_models) {
+        let resolved_model = if let Some(installed) =
+            startup_installed_model(&model, &installed_models)
+        {
             installed
         } else {
             {
@@ -1003,7 +1139,8 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
 
                     // If a local model appeared while pulling, use it instead of
                     // making startup depend on another network pull.
-                    if let Some(installed) = preferred_installed_model(&ollama_model_names().await) {
+                    if let Some(installed) = preferred_installed_model(&ollama_model_names().await)
+                    {
                         installed
                     } else if ollama_has_model(FALLBACK_MODEL).await {
                         FALLBACK_MODEL.to_string()
@@ -1068,7 +1205,11 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             s.error = Some(format!(
                 "Could not reach your custom inference server at {}. \
                  Start the server (e.g. LM Studio) and check the URL in Settings, then relaunch.",
-                if host.is_empty() { "(no URL set)" } else { host.as_str() }
+                if host.is_empty() {
+                    "(no URL set)"
+                } else {
+                    host.as_str()
+                }
             ));
             return;
         }
@@ -1146,14 +1287,14 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             return;
         }
 
-        let target_path = std::path::PathBuf::from(home_dir()).join("OpenJarvis");
+        let target_path = std::path::PathBuf::from(home_dir()).join("AstronoJarvis");
         let clone_target = target_path.display().to_string();
 
         // If the directory exists but is not a valid project, don't overwrite
         if target_path.exists() && !target_path.join("pyproject.toml").exists() {
             let mut s = status.lock().await;
             s.error = Some(format!(
-                "{} exists but is not a valid OpenJarvis project. \
+                "{} exists but is not a valid Astrono Jarvis project. \
                  Remove it and relaunch, or set OPENJARVIS_ROOT to the correct path.",
                 clone_target,
             ));
@@ -1162,20 +1303,22 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
 
         {
             let mut s = status.lock().await;
-            s.detail = "Downloading OpenJarvis (first launch)...".into();
+            s.detail = "Downloading Astrono Jarvis (first launch)...".into();
         }
 
-        let clone_result = tokio::process::Command::new(&git_bin)
+        let mut clone_command = tokio::process::Command::new(&git_bin);
+        clone_command
             .args([
                 "clone",
                 "--depth",
                 "1",
-                "https://github.com/open-jarvis/OpenJarvis.git",
+                "https://github.com/jcb1515/Jarvis.git",
                 &clone_target,
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+            .stderr(std::process::Stdio::piped());
+        prepare_subprocess(&mut clone_command);
+        let clone_result = clone_command.spawn();
 
         match clone_result {
             Ok(child) => match child.wait_with_output().await {
@@ -1186,8 +1329,8 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let mut s = status.lock().await;
                     s.error = Some(format!(
-                        "Failed to download OpenJarvis: {}. \
-                         Clone manually: git clone https://github.com/open-jarvis/OpenJarvis.git {}",
+                        "Failed to download Astrono Jarvis: {}. \
+                         Clone manually: git clone https://github.com/jcb1515/Jarvis.git {}",
                         stderr.trim(),
                         clone_target,
                     ));
@@ -1196,8 +1339,8 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                 Err(e) => {
                     let mut s = status.lock().await;
                     s.error = Some(format!(
-                        "Failed to download OpenJarvis: {}. \
-                         Clone manually: git clone https://github.com/open-jarvis/OpenJarvis.git {}",
+                        "Failed to download Astrono Jarvis: {}. \
+                         Clone manually: git clone https://github.com/jcb1515/Jarvis.git {}",
                         e, clone_target,
                     ));
                     return;
@@ -1239,85 +1382,106 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     // so a multi-user host can't trivially spoof us. Also accept a port
     // override from config instead of hard-coding JARVIS_PORT.
     {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
+        let client = match reqwest::Client::builder()
+            .timeout(JARVIS_HEALTH_REQUEST_TIMEOUT)
             .build()
-            .unwrap();
-        match client
-            .get(format!("http://127.0.0.1:{}/health", JARVIS_PORT))
-            .send()
-            .await
         {
-            Ok(resp) if resp.status().is_success() => {
-                // Confirm with a second probe — the first might have caught
-                // a flickering server (engine half-loaded, dying mid-stop,
-                // etc.) and we don't want to claim ready off a 2-second
-                // snapshot. Small sleep between to give the server room.
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let confirm = client
-                    .get(format!("http://127.0.0.1:{}/health", JARVIS_PORT))
-                    .send()
-                    .await
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
-                if !confirm {
-                    // First probe was 2xx but the second wasn't — fall
-                    // through to the spawn path. The server probably went
-                    // away between probes.
-                    // (No early return — we want to spawn our own.)
-                } else {
+            Ok(client) => client,
+            Err(error) => {
+                let mut s = status.lock().await;
+                s.error = Some(format!(
+                    "Could not create the local API health client: {}",
+                    error
+                ));
+                return;
+            }
+        };
+        let health_url = format!("http://127.0.0.1:{}/health", JARVIS_PORT);
+        let mut occupied_probe_failures: u8 = 0;
+
+        loop {
+            match client.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    // Confirm with a second probe — the first might have caught
+                    // a flickering server (engine half-loaded, dying mid-stop,
+                    // etc.) and we don't want to claim ready from one snapshot.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let confirmed = client
+                        .get(&health_url)
+                        .send()
+                        .await
+                        .map(|response| response.status().is_success())
+                        .unwrap_or(false);
+                    if !confirmed {
+                        occupied_probe_failures += 1;
+                        if occupied_probe_failures >= 3 {
+                            let mut s = status.lock().await;
+                            s.error = Some(format!(
+                                "The API server on port {} answered intermittently and \
+                                 did not remain healthy across {} confirmation probes. \
+                                 Wait for it to finish starting, then relaunch.",
+                                JARVIS_PORT, occupied_probe_failures,
+                            ));
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+
                     // Attach to the existing healthy server. Mark every
                     // pre-spawn step done so the setup UI doesn't show a
-                    // half-progress bar (model_ready / ollama_ready stay
-                    // false otherwise because we skipped those steps).
+                    // half-progress bar.
                     let mut s = status.lock().await;
                     s.phase = "ready".into();
-                    s.detail = format!(
-                        "Connected to existing API server on port {}.",
-                        JARVIS_PORT,
-                    );
+                    s.detail = format!("Connected to existing API server on port {}.", JARVIS_PORT);
                     s.server_ready = true;
                     s.model_ready = true;
                     s.ollama_ready = true;
                     return;
                 }
-            }
-            Ok(resp) if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
-                let mut s = status.lock().await;
-                s.error = Some(format!(
-                    "An API server is already running on port {} but its \
-                     inference engine isn't ready (HTTP 503). If this is your \
-                     `jarvis serve`, wait for it to finish loading and relaunch. \
-                     Otherwise, stop that service or change the port.",
-                    JARVIS_PORT,
-                ));
-                return;
-            }
-            Ok(resp) => {
-                // Something else (a different web server, a stale process,
-                // a 4xx-returning instance) is on our port. Don't kill it —
-                // give the user actionable info instead.
-                let mut s = status.lock().await;
-                s.error = Some(format!(
-                    "Port {} is already in use by another service (it answered \
-                     /health with HTTP {}). Stop that service or change the \
-                     OpenJarvis port, then relaunch.\n\nTo identify it:\n  {}",
-                    JARVIS_PORT,
-                    resp.status(),
-                    port_owner_hint(),
-                ));
-                return;
-            }
-            Err(_) => {
-                // Nothing listening — proceed to the normal spawn path.
+                Ok(resp) if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                    let mut s = status.lock().await;
+                    s.error = Some(format!(
+                        "An API server is already running on port {} but its \
+                         inference engine isn't ready (HTTP 503). If this is your \
+                         `jarvis serve`, wait for it to finish loading and relaunch. \
+                         Otherwise, stop that service or change the port.",
+                        JARVIS_PORT,
+                    ));
+                    return;
+                }
+                Ok(resp) => {
+                    // Something else is on the port. Never kill it; surface the
+                    // exact status and leave the foreign process untouched.
+                    let mut s = status.lock().await;
+                    s.error = Some(format!(
+                        "Port {} is already in use by another service (it answered \
+                         /health with HTTP {}). Stop that service or change the \
+                         Astrono Jarvis port, then relaunch.\n\nTo identify it:\n  {}",
+                        JARVIS_PORT,
+                        resp.status(),
+                        port_owner_hint(),
+                    ));
+                    return;
+                }
+                Err(probe_error) => match check_jarvis_port_available() {
+                    Ok(()) => break,
+                    Err(port_error) => {
+                        occupied_probe_failures += 1;
+                        if occupied_probe_failures >= 3 {
+                            let mut s = status.lock().await;
+                            s.error = Some(format!(
+                                "Astrono Jarvis could not attach to the service on port {} \
+                                 after {} health probes. Last health error: {}. {}",
+                                JARVIS_PORT, occupied_probe_failures, probe_error, port_error,
+                            ));
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                },
             }
         }
-    }
-
-    if let Err(err) = check_jarvis_port_available() {
-        let mut s = status.lock().await;
-        s.error = Some(err);
-        return;
     }
 
     let root = project_root.as_ref().unwrap();
@@ -1343,41 +1507,51 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     // to the user BEFORE the long server-start wait. The status detail
     // message also indicates this can take a couple of minutes on first
     // boot so users don't restart the app thinking it's stuck.
-    {
+    if !desktop_environment_ready(root, &uv_bin).await {
+        {
+            let mut s = status.lock().await;
+            s.detail =
+                "Installing dependencies (uv sync — may take 1-2 min on first boot)...".into();
+        }
+        let mut sync_cmd = tokio::process::Command::new(&uv_bin);
+        sync_cmd
+            .args([
+                "sync",
+                "--extra",
+                "desktop",
+                "--extra",
+                "inference-cloud",
+                "--extra",
+                "inference-google",
+                // openjarvis_rust lives in a uv dependency group (not the published
+                // `desktop` extra) so pip installs from PyPI don't require it (#584).
+                "--group",
+                "desktop-native",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(root);
+        // Avoid LD_LIBRARY_PATH leak when running inside an AppImage (#455).
+        prepare_subprocess(&mut sync_cmd);
+        add_cargo_bin_to_path(&mut sync_cmd);
+        let sync_output = sync_cmd.output().await;
+        match sync_output {
+            Ok(out) if !out.status.success() => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let mut s = status.lock().await;
+                s.error = Some(format_uv_sync_failure(root, out.status.code(), &stderr));
+                return;
+            }
+            Err(e) => {
+                let mut s = status.lock().await;
+                s.error = Some(format_uv_sync_spawn_error(root, &uv_bin, &e.to_string()));
+                return;
+            }
+            Ok(_) => {}
+        }
+    } else {
         let mut s = status.lock().await;
-        s.detail = "Installing dependencies (uv sync — may take 1-2 min on first boot)...".into();
-    }
-    let mut sync_cmd = tokio::process::Command::new(&uv_bin);
-    sync_cmd
-        .args([
-            "sync",
-            "--extra", "desktop",
-            "--extra", "inference-cloud",
-            "--extra", "inference-google",
-            // openjarvis_rust lives in a uv dependency group (not the published
-            // `desktop` extra) so pip installs from PyPI don't require it (#584).
-            "--group", "desktop-native",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(root);
-    // Avoid LD_LIBRARY_PATH leak when running inside an AppImage (#455).
-    prepare_subprocess_for_appimage(&mut sync_cmd);
-    add_cargo_bin_to_path(&mut sync_cmd);
-    let sync_output = sync_cmd.output().await;
-    match sync_output {
-        Ok(out) if !out.status.success() => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let mut s = status.lock().await;
-            s.error = Some(format_uv_sync_failure(root, out.status.code(), &stderr));
-            return;
-        }
-        Err(e) => {
-            let mut s = status.lock().await;
-            s.error = Some(format_uv_sync_spawn_error(root, &uv_bin, &e.to_string()));
-            return;
-        }
-        Ok(_) => {} // success — fall through
+        s.detail = "Project environment ready.".into();
     }
 
     {
@@ -1396,6 +1570,14 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     }
 
     let mut cmd = tokio::process::Command::new(&uv_bin);
+    let (project_config_path, project_environment) = match load_project_environment(root) {
+        Ok(environment) => environment,
+        Err(error) => {
+            let mut status = status.lock().await;
+            status.error = Some(error);
+            return;
+        }
+    };
     let mut serve_argv: Vec<String> = vec![
         "run".into(),
         "jarvis".into(),
@@ -1424,8 +1606,12 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
     // Avoid LD_LIBRARY_PATH leak when running inside an AppImage (#455) —
     // do this BEFORE cmd.env() calls below so our explicit cloud-key env
     // additions aren't accidentally stripped.
-    prepare_subprocess_for_appimage(&mut cmd);
+    prepare_subprocess(&mut cmd);
 
+    cmd.env("OPENJARVIS_CONFIG", project_config_path);
+    for (key, value) in project_environment {
+        cmd.env(key, value);
+    }
     // Inject cloud API keys from secure desktop storage.
     for (key, value) in read_cloud_keys() {
         cmd.env(&key, &value);
@@ -1451,7 +1637,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             let mut s = status.lock().await;
             s.error = Some(format!(
                 "Could not start jarvis server: {}. \
-                 Make sure uv is installed (https://astral.sh/uv) and the OpenJarvis repo is cloned at {}",
+                 Make sure uv is installed (https://astral.sh/uv) and the Astrono Jarvis repo is cloned at {}",
                 e,
                 root.display(),
             ));
@@ -1496,7 +1682,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                     "Jarvis server exited (code {}) before becoming ready.\n\n\
                      No stderr output. Check that:\n\
                      1. uv is installed ({})\n\
-                     2. The OpenJarvis repo is at {}\n\
+                     2. The Astrono Jarvis repo is at {}\n\
                      3. 'uv sync' completes in that directory",
                     code_str,
                     uv_bin,
@@ -1517,7 +1703,7 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
                 format!(
                     "Jarvis server did not become ready within 10 minutes. Check that:\n\
                      1. uv is installed ({})\n\
-                     2. The OpenJarvis repo is at {}\n\
+                     2. The Astrono Jarvis repo is at {}\n\
                      3. Run 'uv sync' in that directory",
                     uv_bin,
                     root.display(),
@@ -1769,6 +1955,7 @@ async fn run_jarvis_command(args: Vec<String>) -> Result<String, String> {
 
     let mut cmd = tokio::process::Command::new(&uv_bin);
     cmd.args(&cmd_args);
+    prepare_subprocess(&mut cmd);
     // Run from the project root so `uv run jarvis` resolves the OpenJarvis
     // project regardless of the app's launch cwd. In a packaged install the
     // cwd isn't the checkout, so without this `jarvis` isn't found and the
@@ -1776,6 +1963,11 @@ async fn run_jarvis_command(args: Vec<String>) -> Result<String, String> {
     // (see #531).
     if let Some(ref root) = find_project_root() {
         cmd.current_dir(root);
+        let (project_config_path, project_environment) = load_project_environment(root)?;
+        cmd.env("OPENJARVIS_CONFIG", project_config_path);
+        for (key, value) in project_environment {
+            cmd.env(key, value);
+        }
     }
 
     let is_serve = args.first().map(|a| a.as_str() == "serve").unwrap_or(false);
@@ -2003,7 +2195,9 @@ fn managed_cloud_key_names() -> Vec<String> {
 
     let cfg = read_inference_config();
     if matches!(&cfg.kind, SourceKind::Custom) {
-        let engine = cfg.engine.unwrap_or_else(|| CUSTOM_FALLBACK_ENGINE.to_string());
+        let engine = cfg
+            .engine
+            .unwrap_or_else(|| CUSTOM_FALLBACK_ENGINE.to_string());
         let key_name = engine_api_key_name(&engine);
         if validate_cloud_key_name(&key_name).is_ok() {
             names.push(key_name);
@@ -2017,19 +2211,30 @@ fn managed_cloud_key_names() -> Vec<String> {
 
 fn secure_store_get(key_name: &str) -> Result<Option<String>, String> {
     validate_cloud_key_name(key_name)?;
-    let entry = keyring::Entry::new(SECURE_KEY_SERVICE, key_name)
-        .map_err(|err| format!("Failed to open secure key storage for {}: {}", key_name, err))?;
+    let entry = keyring::Entry::new(SECURE_KEY_SERVICE, key_name).map_err(|err| {
+        format!(
+            "Failed to open secure key storage for {}: {}",
+            key_name, err
+        )
+    })?;
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!("Failed to read {} from secure key storage: {}", key_name, err)),
+        Err(err) => Err(format!(
+            "Failed to read {} from secure key storage: {}",
+            key_name, err
+        )),
     }
 }
 
 fn secure_store_set(key_name: &str, key_value: &str) -> Result<(), String> {
     validate_cloud_key_name(key_name)?;
-    let entry = keyring::Entry::new(SECURE_KEY_SERVICE, key_name)
-        .map_err(|err| format!("Failed to open secure key storage for {}: {}", key_name, err))?;
+    let entry = keyring::Entry::new(SECURE_KEY_SERVICE, key_name).map_err(|err| {
+        format!(
+            "Failed to open secure key storage for {}: {}",
+            key_name, err
+        )
+    })?;
     if key_value.is_empty() {
         return match entry.delete_credential() {
             Ok(()) => Ok(()),
@@ -2282,7 +2487,8 @@ fn write_inference_config(cfg: &InferenceConfig) -> Result<(), String> {
         let _ = std::fs::create_dir_all(parent);
     }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json + "\n").map_err(|e| format!("Failed to save inference config: {}", e))
+    std::fs::write(&path, json + "\n")
+        .map_err(|e| format!("Failed to save inference config: {}", e))
 }
 
 /// Upsert `[engine.<engine>] host = "<host>"` into an existing config.toml
@@ -2440,7 +2646,7 @@ mod native_overlay {
         // Also inject CSS to nuke any remaining background
         let js = nsstring(
             "document.documentElement.style.background='transparent';\
-             document.body.style.background='transparent';"
+             document.body.style.background='transparent';",
         );
         let nil: *mut Object = std::ptr::null_mut();
         let _: () = msg_send![wv, evaluateJavaScript: js completionHandler: nil];
@@ -2471,7 +2677,9 @@ mod native_overlay {
             let sup = Class::get("NSObject").unwrap();
             let mut decl = ClassDecl::new("JarvisOverlayNavDelegate", sup).unwrap();
             extern "C" fn did_finish(_: &Object, _: Sel, wv: *mut Object, _nav: *mut Object) {
-                unsafe { force_transparent(wv); }
+                unsafe {
+                    force_transparent(wv);
+                }
             }
             decl.add_method(
                 sel!(webView:didFinishNavigation:),
@@ -2757,7 +2965,7 @@ pub fn run() {
             let health = MenuItemBuilder::with_id("health", "Health: starting...")
                 .enabled(false)
                 .build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit OpenJarvis").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit Astrono Jarvis").build(app)?;
 
             let menu = MenuBuilder::new(app)
                 .item(&show)
@@ -2769,7 +2977,7 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("OpenJarvis")
+                .tooltip("Astrono Jarvis")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "show" => {
@@ -2850,7 +3058,7 @@ pub fn run() {
             get_overlay_conversation,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building OpenJarvis Desktop")
+        .expect("error while building Astrono Jarvis Desktop")
         .run(move |_app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let b = backend.clone();
@@ -2871,9 +3079,10 @@ mod tests {
         boot_plan, default_local_model, format_extension_import_failure,
         format_missing_rust_toolchain, format_port_unavailable, format_uv_sync_failure,
         format_uv_sync_spawn_error, matching_installed_model, model_names_match, normalize_host,
-        parse_inference_config, parse_ollama_model_names, preferred_installed_model,
-        should_persist_resolved_model, startup_installed_model, upsert_engine_host,
-        uv_sync_stderr_tail, InferenceConfig, SourceKind, DESKTOP_UV_SYNC_COMMAND,
+        parse_inference_config, parse_ollama_model_names, parse_project_env,
+        preferred_installed_model, should_persist_resolved_model, startup_installed_model,
+        upsert_engine_host, uv_sync_stderr_tail, InferenceConfig, SourceKind,
+        DESKTOP_UV_SYNC_COMMAND,
     };
     use std::path::Path;
 
@@ -2986,10 +3195,10 @@ mod tests {
     #[test]
     fn default_local_model_picks_second_largest_that_fits() {
         // QWEN35_MODELS min_ram ladder: 4,6,8,12,24,32,96 GB
-        assert_eq!(default_local_model(4.0), "qwen3.5:0.8b");  // only one fits
-        assert_eq!(default_local_model(8.0), "qwen3.5:2b");    // fits 0.8/2/4 → 2nd-largest
-        assert_eq!(default_local_model(16.0), "qwen3.5:4b");   // fits ..9b → 2nd-largest
-        assert_eq!(default_local_model(32.0), "qwen3.5:27b");  // fits 0.8/2/4/9/27/35b → 2nd-largest is 27b
+        assert_eq!(default_local_model(4.0), "qwen3.5:0.8b"); // only one fits
+        assert_eq!(default_local_model(8.0), "qwen3.5:2b"); // fits 0.8/2/4 → 2nd-largest
+        assert_eq!(default_local_model(16.0), "qwen3.5:4b"); // fits ..9b → 2nd-largest
+        assert_eq!(default_local_model(32.0), "qwen3.5:27b"); // fits 0.8/2/4/9/27/35b → 2nd-largest is 27b
         assert_eq!(default_local_model(128.0), "qwen3.5:35b"); // fits all → 2nd-largest
     }
 
@@ -3071,7 +3280,10 @@ mod tests {
 
     #[test]
     fn resolved_model_is_only_persisted_when_no_model_was_configured() {
-        let default_cfg = InferenceConfig { kind: SourceKind::Ollama, ..Default::default() };
+        let default_cfg = InferenceConfig {
+            kind: SourceKind::Ollama,
+            ..Default::default()
+        };
         assert!(should_persist_resolved_model(&default_cfg));
 
         let empty_cfg = InferenceConfig {
@@ -3091,8 +3303,14 @@ mod tests {
 
     #[test]
     fn parse_defaults_to_ollama_when_file_missing_or_garbage() {
-        assert!(matches!(parse_inference_config("").kind, SourceKind::Ollama));
-        assert!(matches!(parse_inference_config("not json").kind, SourceKind::Ollama));
+        assert!(matches!(
+            parse_inference_config("").kind,
+            SourceKind::Ollama
+        ));
+        assert!(matches!(
+            parse_inference_config("not json").kind,
+            SourceKind::Ollama
+        ));
     }
 
     #[test]
@@ -3108,21 +3326,67 @@ mod tests {
 
     #[test]
     fn normalize_host_strips_trailing_slash_and_v1() {
-        assert_eq!(normalize_host("http://localhost:1234/v1"), "http://localhost:1234");
-        assert_eq!(normalize_host("http://localhost:1234/v1/"), "http://localhost:1234");
-        assert_eq!(normalize_host("http://localhost:1234/"), "http://localhost:1234");
+        assert_eq!(
+            normalize_host("http://localhost:1234/v1"),
+            "http://localhost:1234"
+        );
+        assert_eq!(
+            normalize_host("http://localhost:1234/v1/"),
+            "http://localhost:1234"
+        );
+        assert_eq!(
+            normalize_host("http://localhost:1234/"),
+            "http://localhost:1234"
+        );
         assert_eq!(normalize_host("http://host:8000"), "http://host:8000");
     }
 
     #[test]
+    fn project_env_parser_accepts_quotes_comments_and_export_prefix() {
+        let content = concat!(
+            "# local-only credentials\n",
+            "OBSIDIAN_API_KEY=\"secret-value\"\n",
+            "export ELEVENLABS_VOICE_ID='voice-id'\n",
+            "OPENJARVIS_API_KEY=\n",
+        );
+
+        let variables = parse_project_env(content).unwrap();
+
+        assert_eq!(
+            variables,
+            vec![
+                ("OBSIDIAN_API_KEY".to_string(), "secret-value".to_string()),
+                ("ELEVENLABS_VOICE_ID".to_string(), "voice-id".to_string()),
+                ("OPENJARVIS_API_KEY".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_env_parser_rejects_malformed_or_unsafe_names() {
+        assert!(parse_project_env("MISSING_EQUALS").is_err());
+        assert!(parse_project_env("BAD-NAME=value").is_err());
+        assert!(parse_project_env("9BAD=value").is_err());
+    }
+
+    #[test]
     fn boot_plan_ollama_launches_and_pulls_one_model() {
-        let cfg = InferenceConfig { kind: SourceKind::Ollama, ..Default::default() };
+        let cfg = InferenceConfig {
+            kind: SourceKind::Ollama,
+            ..Default::default()
+        };
         let plan = boot_plan(&cfg, 16.0);
         assert!(plan.launch_ollama);
         assert_eq!(plan.model_to_pull.as_deref(), Some("qwen3.5:4b"));
         assert!(plan.engine_host.is_none());
-        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "ollama"]));
-        assert!(plan.serve_args.windows(2).any(|w| w == ["--model", "qwen3.5:4b"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--engine", "ollama"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--model", "qwen3.5:4b"]));
     }
 
     #[test]
@@ -3151,8 +3415,14 @@ mod tests {
             plan.engine_host,
             Some(("lmstudio".to_string(), "http://localhost:1234".to_string()))
         );
-        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "lmstudio"]));
-        assert!(plan.serve_args.windows(2).any(|w| w == ["--model", "qwen2.5-7b"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--engine", "lmstudio"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--model", "qwen2.5-7b"]));
     }
 
     #[test]
@@ -3165,7 +3435,10 @@ mod tests {
         };
         let plan = boot_plan(&cfg, 16.0);
         assert_eq!(plan.engine_host.as_ref().unwrap().0, "lmstudio");
-        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "lmstudio"]));
+        assert!(plan
+            .serve_args
+            .windows(2)
+            .any(|w| w == ["--engine", "lmstudio"]));
     }
 
     #[test]
@@ -3184,7 +3457,10 @@ mod tests {
     #[test]
     fn boot_plan_ollama_uses_fallback_model_on_low_ram() {
         // Below the smallest model's min_ram → default_local_model → FALLBACK_MODEL.
-        let cfg = InferenceConfig { kind: SourceKind::Ollama, ..Default::default() };
+        let cfg = InferenceConfig {
+            kind: SourceKind::Ollama,
+            ..Default::default()
+        };
         let plan = boot_plan(&cfg, 1.0);
         assert_eq!(plan.model_to_pull.as_deref(), Some(super::FALLBACK_MODEL));
     }
@@ -3204,8 +3480,14 @@ mod tests {
         let existing = "[intelligence]\ndefault_model = \"keep-me\"\n";
         let out = upsert_engine_host(existing, "vllm", "http://host:8000").unwrap();
         let doc: toml_edit::DocumentMut = out.parse().unwrap();
-        assert_eq!(doc["intelligence"]["default_model"].as_str(), Some("keep-me"));
-        assert_eq!(doc["engine"]["vllm"]["host"].as_str(), Some("http://host:8000"));
+        assert_eq!(
+            doc["intelligence"]["default_model"].as_str(),
+            Some("keep-me")
+        );
+        assert_eq!(
+            doc["engine"]["vllm"]["host"].as_str(),
+            Some("http://host:8000")
+        );
     }
 
     #[test]
@@ -3213,7 +3495,10 @@ mod tests {
         let existing = "[engine.lmstudio]\nhost = \"http://old:1\"\n";
         let out = upsert_engine_host(existing, "lmstudio", "http://new:2").unwrap();
         let doc: toml_edit::DocumentMut = out.parse().unwrap();
-        assert_eq!(doc["engine"]["lmstudio"]["host"].as_str(), Some("http://new:2"));
+        assert_eq!(
+            doc["engine"]["lmstudio"]["host"].as_str(),
+            Some("http://new:2")
+        );
     }
 
     // -----------------------------------------------------------------

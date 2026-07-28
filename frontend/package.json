@@ -1,5 +1,5 @@
 {
-  "name": "openjarvis-chat",
+  "name": "astrono-jarvis",
   "private": true,
   "version": "1.0.1",
   "type": "module",
@@ -12,6 +12,7 @@
     "build:tauri": "tsc -b && vite build --outDir dist",
     "preview": "vite preview",
     "tauri": "tauri",
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/package-windows.ps1",
     "test": "vitest run"
   },
   "dependencies": {

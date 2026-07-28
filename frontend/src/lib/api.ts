@@ -1365,6 +1365,21 @@ export interface PendingApproval {
   expires_at: string;
 }
 
+export interface ApprovalExecutionResponse {
+  status: 'approved' | 'denied' | 'executed' | 'failed';
+  execution_status:
+    | 'already_executed'
+    | 'executed'
+    | 'not_applicable'
+    | 'retryable';
+  id: string;
+  result?: {
+    success: boolean;
+    content: string;
+    tool?: string;
+  };
+}
+
 export async function fetchPendingApprovals(): Promise<PendingApproval[]> {
   const res = await apiFetch(`/v1/approvals/pending`);
   if (!res.ok) throw new Error(`Failed: ${res.status}`);
@@ -1372,9 +1387,12 @@ export async function fetchPendingApprovals(): Promise<PendingApproval[]> {
   return data.actions || [];
 }
 
-export async function approveAction(actionId: string): Promise<void> {
+export async function approveAction(
+  actionId: string,
+): Promise<ApprovalExecutionResponse> {
   const res = await apiFetch(`/v1/approvals/${actionId}/approve`, { method: 'POST' });
   if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
 }
 
 export async function denyAction(actionId: string): Promise<void> {

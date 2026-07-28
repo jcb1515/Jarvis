@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,7 @@ STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_DENIED = "denied"
 STATUS_EXPIRED = "expired"
+STATUS_EXECUTING = "executing"
 STATUS_EXECUTED = "executed"
 
 # Tiers govern default ask behavior
@@ -153,6 +155,7 @@ class ApprovalStore:
         self._db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
         self._conn.commit()
@@ -270,18 +273,38 @@ class ApprovalStore:
         notification_sent: Optional[bool] = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        if notification_sent is not None:
-            self._conn.execute(
-                "UPDATE pending_actions SET status = ?, decision_at = ?, "
-                "notification_sent = ? WHERE id = ?",
-                (status, now, int(notification_sent), action_id),
+        with self._lock:
+            if notification_sent is not None:
+                self._conn.execute(
+                    "UPDATE pending_actions SET status = ?, decision_at = ?, "
+                    "notification_sent = ? WHERE id = ?",
+                    (status, now, int(notification_sent), action_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE pending_actions SET status = ?, decision_at = ? "
+                    "WHERE id = ?",
+                    (status, now, action_id),
+                )
+            self._conn.commit()
+
+    def compare_and_set_status(
+        self,
+        action_id: str,
+        expected_status: str,
+        new_status: str,
+    ) -> bool:
+        """Atomically change an action status when it still matches."""
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE pending_actions SET status = ?, decision_at = ? "
+                "WHERE id = ? AND status = ?",
+                (new_status, now, action_id, expected_status),
             )
-        else:
-            self._conn.execute(
-                "UPDATE pending_actions SET status = ?, decision_at = ? WHERE id = ?",
-                (status, now, action_id),
-            )
-        self._conn.commit()
+            self._conn.commit()
+            return cursor.rowcount == 1
 
     def expire_stale(self) -> int:
         """Mark past-TTL pending actions as expired. Returns count."""
@@ -398,6 +421,7 @@ __all__ = [
     "STATUS_APPROVED",
     "STATUS_DENIED",
     "STATUS_EXPIRED",
+    "STATUS_EXECUTING",
     "STATUS_EXECUTED",
     "TIER_TRIVIAL",
     "TIER_LOW",

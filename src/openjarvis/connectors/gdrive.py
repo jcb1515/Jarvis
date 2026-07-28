@@ -136,8 +136,10 @@ class GDriveConnector(BaseConnector):
     auth_type = "oauth"
 
     def __init__(self, credentials_path: str = "") -> None:
-        self._credentials_path = resolve_google_credentials(
-            credentials_path or _DEFAULT_CREDENTIALS_PATH
+        self._credentials_path = (
+            credentials_path
+            if credentials_path
+            else resolve_google_credentials(_DEFAULT_CREDENTIALS_PATH)
         )
         self._items_synced: int = 0
         self._items_total: int = 0

@@ -6,6 +6,7 @@ from typing import Any
 
 from openjarvis.core.types import ToolCall, ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolExecutor, ToolSpec
+from openjarvis.tools.approval_store import ApprovalStore
 
 # ---------------------------------------------------------------------------
 # Test tool helpers
@@ -52,25 +53,33 @@ class _DangerousTool(BaseTool):
 
 
 class TestToolConfirmation:
-    def test_requires_confirmation_no_callback(self) -> None:
+    def test_requires_confirmation_no_callback(self, tmp_path) -> None:
         """Tool requiring confirmation but no callback → blocked."""
-        executor = ToolExecutor([_DangerousTool()])
-        call = ToolCall(id="1", name="dangerous", arguments="{}")
-        result = executor.execute(call)
-        assert result.success is False
-        assert "requires confirmation" in result.content
-
-    def test_requires_confirmation_not_interactive(self) -> None:
-        """Tool requiring confirmation but interactive=False → blocked."""
+        approval_store = ApprovalStore(str(tmp_path / "approvals.db"))
         executor = ToolExecutor(
             [_DangerousTool()],
-            interactive=False,
-            confirm_callback=lambda _: True,
+            approval_store=approval_store,
         )
         call = ToolCall(id="1", name="dangerous", arguments="{}")
         result = executor.execute(call)
         assert result.success is False
         assert "requires confirmation" in result.content
+        approval_store.close()
+
+    def test_requires_confirmation_not_interactive(self, tmp_path) -> None:
+        """Tool requiring confirmation but interactive=False → blocked."""
+        approval_store = ApprovalStore(str(tmp_path / "approvals.db"))
+        executor = ToolExecutor(
+            [_DangerousTool()],
+            interactive=False,
+            confirm_callback=lambda _: True,
+            approval_store=approval_store,
+        )
+        call = ToolCall(id="1", name="dangerous", arguments="{}")
+        result = executor.execute(call)
+        assert result.success is False
+        assert "requires confirmation" in result.content
+        approval_store.close()
 
     def test_requires_confirmation_denied(self) -> None:
         """Tool requiring confirmation, callback returns False → denied."""

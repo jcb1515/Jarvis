@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,8 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int = 1024
     stream: bool = False
     tools: Optional[List[Dict[str, Any]]] = None
+    think: bool = False
+    tool_mode: Literal["direct", "auto", "tools"] = "direct"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ class ChatCompletionResponse(BaseModel):
 class DeltaMessage(BaseModel):
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
     # Streaming tool_calls (OpenAI delta shape, with `index`). Present only
     # on streamed raw function-calling responses (stream:true + tools).
     tool_calls: Optional[List[Dict[str, Any]]] = None

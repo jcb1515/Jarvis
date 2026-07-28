@@ -3,15 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from openjarvis.assistant.actions import (
+    ActionError,
+    ActionKind,
+    ActionRequest,
+    ActionResult,
+    execute_action,
+    resolve_action,
+)
+from openjarvis.assistant.obsidian import (
+    DailyBriefService,
+    ObsidianServiceError,
+    build_obsidian_client,
+    summarize_daily_brief,
+)
+from openjarvis.assistant.tool_loop import (
+    ToolLoopError,
+    is_action_oriented,
+    run_bounded_tool_loop,
+    select_action_tools,
+)
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message, Role
+from openjarvis.engine._stubs import StreamChunk
 from openjarvis.server.models import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -27,6 +51,140 @@ from openjarvis.server.models import (
 )
 
 router = APIRouter()
+
+
+def _last_user_content(chat_messages) -> str:
+    """Return the most recent non-empty user message."""
+
+    for message in reversed(chat_messages):
+        if message.role == "user" and message.content:
+            return message.content
+    return ""
+
+
+def _action_response(
+    result: ActionResult,
+    model: str,
+    stream: bool,
+) -> ChatCompletionResponse | StreamingResponse:
+    """Format a scoped action result as an OpenAI-compatible response."""
+
+    if not stream:
+        return ChatCompletionResponse(
+            model=model,
+            choices=[
+                Choice(
+                    message=ChoiceMessage(role="assistant", content=result.content),
+                    finish_reason="stop",
+                )
+            ],
+            usage=UsageInfo(),
+        )
+
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+
+    async def generate():
+        role_chunk = ChatCompletionChunk(
+            id=chunk_id,
+            model=model,
+            choices=[StreamChoice(delta=DeltaMessage(role="assistant"))],
+        )
+        yield f"data: {role_chunk.model_dump_json()}\n\n"
+        if result.reasoning_content:
+            reasoning_chunk = ChatCompletionChunk(
+                id=chunk_id,
+                model=model,
+                choices=[
+                    StreamChoice(
+                        delta=DeltaMessage(
+                            reasoning_content=result.reasoning_content,
+                        )
+                    )
+                ],
+            )
+            yield f"data: {reasoning_chunk.model_dump_json()}\n\n"
+        content_chunk = ChatCompletionChunk(
+            id=chunk_id,
+            model=model,
+            choices=[StreamChoice(delta=DeltaMessage(content=result.content))],
+        )
+        content_data = json.loads(content_chunk.model_dump_json())
+        content_data["tool"] = {
+            "name": result.action.kind.value,
+            "success": result.success,
+            "arguments": dict(result.action.arguments),
+        }
+        yield f"data: {json.dumps(content_data)}\n\n"
+        finish_chunk = ChatCompletionChunk(
+            id=chunk_id,
+            model=model,
+            choices=[StreamChoice(delta=DeltaMessage(), finish_reason="stop")],
+        )
+        yield f"data: {finish_chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+def _execute_daily_brief_action(
+    app: Any,
+    action: ActionRequest,
+) -> ActionResult:
+    """Read and summarize a dated Obsidian brief outside the chat brain."""
+
+    config = getattr(app.state, "config", None)
+    if config is None:
+        raise ObsidianServiceError(
+            "The active server has no daily-brief configuration."
+        )
+    brief_config = config.daily_brief
+    if not brief_config.enabled:
+        raise ObsidianServiceError("Daily brief access is disabled.")
+
+    raw_date = action.arguments.get("date")
+    if raw_date:
+        try:
+            brief_date = date.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise ObsidianServiceError(
+                f"Daily brief date '{raw_date}' must use YYYY-MM-DD."
+            ) from exc
+    else:
+        timezone = ZoneInfo(brief_config.timezone)
+        brief_date = datetime.now(timezone).date()
+
+    service = getattr(app.state, "daily_brief_service", None)
+    if service is None:
+        client = build_obsidian_client(
+            config.tools.mcp,
+            brief_config.mcp_server,
+        )
+        service = DailyBriefService(client, brief_config.folder)
+        app.state.obsidian_mcp_client = client
+        app.state.daily_brief_service = service
+
+    note = service.read_brief(brief_date)
+    summary = summarize_daily_brief(
+        note,
+        brief_config.spoken_max_chars,
+    )
+    resolved_action = ActionRequest(
+        kind=ActionKind.DAILY_BRIEF,
+        arguments={
+            "date": brief_date.isoformat(),
+            "source_path": note.source_path,
+        },
+    )
+    return ActionResult(
+        action=resolved_action,
+        content=f"{summary}\n\nSource: {note.source_path}",
+        success=True,
+        reasoning_content="",
+    )
 
 
 def _to_messages(chat_messages) -> list[Message]:
@@ -87,6 +245,17 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
             system_prompt_config=getattr(cfg, "system_prompt", None),
         )
         prompt = builder.build()
+        context_config = getattr(cfg, "context_memory", None)
+        if context_config is not None:
+            from openjarvis.assistant.context_memory import read_cached_context
+
+            cached_context = read_cached_context(context_config)
+            if cached_context:
+                prompt = (
+                    f"{prompt}\n\n"
+                    "Approved durable user context from Obsidian:\n"
+                    f"{cached_context}"
+                )
     except Exception:
         logging.getLogger("openjarvis.server").debug(
             "Identity system prompt resolution failed; "
@@ -107,9 +276,111 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
     engine = request.app.state.engine
     agent = getattr(request.app.state, "agent", None)
     model = request_body.model
+    config = getattr(request.app.state, "config", None)
+
+    query_text_for_complexity = _last_user_content(request_body.messages)
+    if query_text_for_complexity and request_body.tool_mode != "direct":
+        scoped_action: ActionRequest | None = None
+        try:
+            scoped_action = resolve_action(query_text_for_complexity)
+            if scoped_action is not None:
+                if scoped_action.kind == ActionKind.DAILY_BRIEF:
+                    action_result = await asyncio.to_thread(
+                        _execute_daily_brief_action,
+                        request.app,
+                        scoped_action,
+                    )
+                else:
+                    if config is None:
+                        raise ActionError(
+                            "The active server has no action configuration."
+                        )
+                    if (
+                        scoped_action.kind == ActionKind.OPEN_URL
+                        and not config.browser_control.enabled
+                    ):
+                        raise ActionError("Browser navigation is disabled.")
+                    if (
+                        scoped_action.kind == ActionKind.OPEN_APPLICATION
+                        and not config.applications.enabled
+                    ):
+                        raise ActionError("Application launching is disabled.")
+                    action_result = await asyncio.to_thread(
+                        execute_action,
+                        scoped_action,
+                        None,
+                        tuple(
+                            application.strip()
+                            for application in (
+                                config.applications.applications.split(",")
+                            )
+                            if application.strip()
+                        ),
+                    )
+                return _action_response(
+                    action_result,
+                    model,
+                    request_body.stream,
+                )
+            should_use_tools = (
+                request_body.tool_mode == "tools"
+                or is_action_oriented(query_text_for_complexity)
+            )
+            if should_use_tools:
+                if config is None:
+                    raise ToolLoopError(
+                        "The active server has no tool-loop configuration."
+                    )
+                tool_messages = _ensure_identity_prompt(
+                    _to_messages(request_body.messages),
+                    config,
+                )
+                scoped_tools = select_action_tools(
+                    query_text_for_complexity,
+                    tuple(getattr(request.app.state, "action_tools", [])),
+                )
+                loop_result = await asyncio.to_thread(
+                    run_bounded_tool_loop,
+                    engine,
+                    model,
+                    tool_messages,
+                    tuple(scoped_tools),
+                    getattr(request.app.state, "action_tool_executor", None),
+                    config.google_workspace.max_tool_turns,
+                    request_body.temperature,
+                    request_body.max_tokens,
+                    request_body.think,
+                )
+                action_result = ActionResult(
+                    action=ActionRequest(
+                        kind=ActionKind.TOOL_LOOP,
+                        arguments={
+                            "tools": ",".join(loop_result.tool_names),
+                        },
+                    ),
+                    content=loop_result.content,
+                    success=loop_result.success,
+                    reasoning_content=loop_result.reasoning_content,
+                )
+                return _action_response(
+                    action_result,
+                    model,
+                    request_body.stream,
+                )
+        except (ActionError, ObsidianServiceError, ToolLoopError) as exc:
+            failed_action = scoped_action or ActionRequest(
+                kind=ActionKind.OPEN_URL,
+                arguments={"input": query_text_for_complexity},
+            )
+            action_result = ActionResult(
+                action=failed_action,
+                content=f"I could not complete that action: {exc}",
+                success=False,
+                reasoning_content="",
+            )
+            return _action_response(action_result, model, request_body.stream)
 
     # Inject memory context into messages before dispatching
-    config = getattr(request.app.state, "config", None)
     memory_backend = getattr(request.app.state, "memory_backend", None)
     if (
         config is not None
@@ -163,11 +434,6 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
 
     # Run complexity analysis on the last user message
     complexity_info = None
-    query_text_for_complexity = ""
-    for m in reversed(request_body.messages):
-        if m.role == "user" and m.content:
-            query_text_for_complexity = m.content
-            break
     if query_text_for_complexity:
         try:
             from openjarvis.learning.routing.complexity import (
@@ -214,6 +480,11 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                 app_config=config,
                 bus=getattr(request.app.state, "bus", None),
                 memory_service=getattr(request.app.state, "memory_service", None),
+                context_memory_service=getattr(
+                    request.app.state,
+                    "context_memory_service",
+                    None,
+                ),
             )
         return await _handle_stream(
             engine,
@@ -224,6 +495,11 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
             app_config=config,
             bus=getattr(request.app.state, "bus", None),
             memory_service=getattr(request.app.state, "memory_service", None),
+            context_memory_service=getattr(
+                request.app.state,
+                "context_memory_service",
+                None,
+            ),
         )
 
     # Non-streaming: use agent if available, otherwise direct engine call.
@@ -275,6 +551,11 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
         response,
         bus=getattr(request.app.state, "bus", None),
         source="server.chat",
+        context_memory_service=getattr(
+            request.app.state,
+            "context_memory_service",
+            None,
+        ),
     )
     return response
 
@@ -295,6 +576,7 @@ def _record_completed_exchange(
     *,
     bus=None,
     source: str = "server.chat",
+    context_memory_service=None,
 ) -> None:
     """Publish or submit a completed exchange without blocking a reply."""
     if not user_text:
@@ -316,6 +598,14 @@ def _record_completed_exchange(
             "Memory submit failed",
             exc_info=True,
         )
+    if context_memory_service is not None:
+        try:
+            context_memory_service.submit(user_text, assistant_text)
+        except Exception:
+            logging.getLogger("openjarvis.server").warning(
+                "Durable context submit failed",
+                exc_info=True,
+            )
 
 
 def _remember_exchange(
@@ -325,6 +615,7 @@ def _remember_exchange(
     *,
     bus=None,
     source: str = "server.chat",
+    context_memory_service=None,
 ) -> None:
     """Record a completed non-streaming exchange."""
     _record_completed_exchange(
@@ -333,6 +624,7 @@ def _remember_exchange(
         _response_content(response),
         bus=bus,
         source=source,
+        context_memory_service=context_memory_service,
     )
 
 
@@ -348,6 +640,7 @@ def _handle_direct(
     messages = _to_messages(req.messages)
     messages = _ensure_identity_prompt(messages, app_config)
     kwargs: dict[str, Any] = {}
+    kwargs["think"] = req.think
     if req.tools:
         kwargs["tools"] = req.tools
     if bus:
@@ -527,6 +820,7 @@ async def _handle_stream_tools(
     app_config=None,
     bus=None,
     memory_service=None,
+    context_memory_service=None,
 ):
     """Stream a raw OpenAI-compat function-calling response via SSE.
 
@@ -571,7 +865,21 @@ async def _handle_stream_tools(
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
                 tools=req.tools,
+                think=req.think,
             ):
+                if sc.reasoning_content:
+                    reasoning_chunk = ChatCompletionChunk(
+                        id=chunk_id,
+                        model=model,
+                        choices=[
+                            StreamChoice(
+                                delta=DeltaMessage(
+                                    reasoning_content=sc.reasoning_content,
+                                )
+                            )
+                        ],
+                    )
+                    yield f"data: {reasoning_chunk.model_dump_json()}\n\n"
                 if sc.content:
                     full_content += sc.content
                     content_chunk = ChatCompletionChunk(
@@ -637,6 +945,7 @@ async def _handle_stream_tools(
                 full_content,
                 bus=bus,
                 source="server.chat.stream",
+                context_memory_service=context_memory_service,
             )
         yield "data: [DONE]\n\n"
 
@@ -657,6 +966,7 @@ async def _handle_stream(
     app_config=None,
     bus=None,
     memory_service=None,
+    context_memory_service=None,
 ):
     """Stream response using SSE format.
 
@@ -742,8 +1052,30 @@ async def _handle_stream(
                         model=model,
                         temperature=req.temperature,
                         max_tokens=req.max_tokens,
+                        think=req.think,
                     )
-            async for token in token_iter:
+            async for streamed_item in token_iter:
+                if isinstance(streamed_item, StreamChunk):
+                    if streamed_item.reasoning_content:
+                        reasoning_chunk = ChatCompletionChunk(
+                            id=chunk_id,
+                            model=model,
+                            choices=[
+                                StreamChoice(
+                                    delta=DeltaMessage(
+                                        reasoning_content=(
+                                            streamed_item.reasoning_content
+                                        ),
+                                    )
+                                )
+                            ],
+                        )
+                        yield f"data: {reasoning_chunk.model_dump_json()}\n\n"
+                    token = streamed_item.content or ""
+                else:
+                    token = streamed_item
+                if not token:
+                    continue
                 full_content += token
                 chunk = ChatCompletionChunk(
                     id=chunk_id,
@@ -804,6 +1136,7 @@ async def _handle_stream(
                 full_content,
                 bus=bus,
                 source="server.chat.stream",
+                context_memory_service=context_memory_service,
             )
 
         # Send finish chunk with usage data if available

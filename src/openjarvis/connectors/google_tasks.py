@@ -45,7 +45,9 @@ class GoogleTasksConnector(BaseConnector):
 
     def __init__(self, *, credentials_path: str = "") -> None:
         self._credentials_path = Path(
-            resolve_google_credentials(credentials_path or _DEFAULT_CREDENTIALS_PATH)
+            credentials_path
+            if credentials_path
+            else resolve_google_credentials(_DEFAULT_CREDENTIALS_PATH)
         )
         self._status = SyncStatus()
 

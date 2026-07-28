@@ -13,10 +13,13 @@ import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import ToolCall, ToolResult
+
+if TYPE_CHECKING:
+    from openjarvis.tools.approval_store import ApprovalStore
 
 # ---------------------------------------------------------------------------
 # ToolSpec — metadata describing a tool's interface
@@ -108,6 +111,7 @@ class ToolExecutor:
         capability_policy: Optional[Any] = None,
         agent_id: str = "",
         boundary_guard: Optional[Any] = None,
+        approval_store: Optional[ApprovalStore] = None,
     ) -> None:
         self._tools: Dict[str, BaseTool] = {t.spec.name: t for t in tools}
         self._bus = bus
@@ -117,6 +121,28 @@ class ToolExecutor:
         self._capability_policy = capability_policy
         self._agent_id = agent_id
         self._boundary_guard = boundary_guard
+        self._approval_store = approval_store
+        self._register_approval_handlers()
+
+    def _register_approval_handlers(self) -> None:
+        """Bind confirmation-gated tools to exact approval execution keys."""
+
+        from openjarvis.tools.approval_execution import (
+            execution_key,
+            register_approval_handler,
+        )
+
+        for tool_name, tool in self._tools.items():
+            if tool.spec.requires_confirmation is not True:
+                continue
+            server_name = str(tool.spec.metadata.get("mcp_server", "external"))
+            key = execution_key(tool_name, server_name)
+            register_approval_handler(
+                key,
+                lambda params, name=tool_name, bound_tool=tool: (
+                    self._dispatch_tool(name, bound_tool, dict(params))
+                ),
+            )
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Parse arguments, dispatch to tool, measure latency, emit events."""
@@ -207,10 +233,10 @@ class ToolExecutor:
                 params.pop("_taint", None)
 
         # Confirmation check for sensitive tools
-        if tool.spec.requires_confirmation:
+        if tool.spec.requires_confirmation is True:
             if not self._interactive or self._confirm_callback is None:
+                from openjarvis.tools.approval_execution import execution_key
                 from openjarvis.tools.approval_store import (
-                    STATUS_EXECUTED,
                     TIER_HIGH,
                     ApprovalStore,
                 )
@@ -224,53 +250,50 @@ class ToolExecutor:
                     f"{tool_call.name}:{canonical_args}".encode("utf-8")
                 ).hexdigest()[:20]
                 permission_key = f"mcp_tool:{fingerprint}"
-                approval_store = ApprovalStore()
-                approved = next(
+                approval_store = self._approval_store
+                if approval_store is None:
+                    approval_store = ApprovalStore()
+                    self._approval_store = approval_store
+                pending = next(
                     (
                         action
-                        for action in approval_store.list_approved()
+                        for action in approval_store.list_pending()
                         if action.permission_key == permission_key
                     ),
                     None,
                 )
-                if approved is not None:
-                    approval_store.update_status(approved.id, STATUS_EXECUTED)
-                else:
-                    pending = next(
-                        (
-                            action
-                            for action in approval_store.list_pending()
-                            if action.permission_key == permission_key
-                        ),
-                        None,
+                if pending is None:
+                    server_name = str(
+                        tool.spec.metadata.get("mcp_server", "external")
                     )
-                    if pending is None:
-                        server_name = str(
-                            tool.spec.metadata.get("mcp_server", "external")
-                        )
-                        pending = approval_store.queue_action(
-                            action_type=tool_call.name,
-                            description=(
-                                f"Allow {server_name} to run "
-                                f"{tool_call.name} with the supplied arguments"
+                    pending = approval_store.queue_action(
+                        action_type=tool_call.name,
+                        description=(
+                            f"Allow {server_name} to run "
+                            f"{tool_call.name} with the supplied arguments"
+                        ),
+                        payload={
+                            "tool": tool_call.name,
+                            "arguments": params,
+                            "server": server_name,
+                            "execution_key": execution_key(
+                                tool_call.name,
+                                server_name,
                             ),
-                            payload={
-                                "tool": tool_call.name,
-                                "arguments": params,
-                                "server": server_name,
-                            },
-                            permission_key=permission_key,
-                            tier=TIER_HIGH,
-                        )
-                    return ToolResult(
-                        tool_name=tool_call.name,
-                        content=(
-                            f"PENDING_APPROVAL:{pending.id}. "
-                            "The user must approve this external write action, "
-                            "then repeat the request."
-                        ),
-                        success=False,
+                        },
+                        permission_key=permission_key,
+                        tier=TIER_HIGH,
                     )
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    content=(
+                        f"PENDING_APPROVAL:{pending.id}. "
+                        "This action requires confirmation. Approve this exact "
+                        "external write action in the "
+                        "Astrono Jarvis approval queue."
+                    ),
+                    success=False,
+                )
             prompt = f"Allow execution of tool '{tool_call.name}' with args {params}?"
             if (
                 self._interactive
@@ -283,6 +306,16 @@ class ToolExecutor:
                     success=False,
                 )
 
+        return self._dispatch_tool(tool_call.name, tool, params)
+
+    def _dispatch_tool(
+        self,
+        tool_name: str,
+        tool: BaseTool,
+        params: Dict[str, Any],
+    ) -> ToolResult:
+        """Execute a previously validated tool call and publish telemetry."""
+
         # Emit start event. ``agent`` carries the managed-agent UUID so the
         # AgentExecutor's trace subscriber (which filters by agent_id) can
         # actually match this event — without it, every tool call is silently
@@ -291,7 +324,7 @@ class ToolExecutor:
             self._bus.publish(
                 EventType.TOOL_CALL_START,
                 {
-                    "tool": tool_call.name,
+                    "tool": tool_name,
                     "arguments": params,
                     "agent": self._agent_id,
                 },
@@ -300,28 +333,30 @@ class ToolExecutor:
         # Execute with timeout
         timeout = tool.spec.timeout_seconds or self._default_timeout
         t0 = time.time()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(tool.execute, **params)
-                result = future.result(timeout=timeout)
+            future = pool.submit(tool.execute, **params)
+            result = future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             if self._bus:
                 self._bus.publish(
                     EventType.TOOL_TIMEOUT,
-                    {"tool": tool_call.name, "timeout": timeout},
+                    {"tool": tool_name, "timeout": timeout},
                 )
             result = ToolResult(
-                tool_name=tool_call.name,
-                content=(f"Tool '{tool_call.name}' timed out after {timeout:.0f}s."),
+                tool_name=tool_name,
+                content=(f"Tool '{tool_name}' timed out after {timeout:.0f}s."),
                 success=False,
             )
         except Exception as exc:
             result = ToolResult(
-                tool_name=tool_call.name,
+                tool_name=tool_name,
                 content=f"Tool execution error: {exc}",
                 success=False,
             )
-        latency = time.time() - t0
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        latency = max(time.time() - t0, 1e-9)
         result.latency_seconds = latency
         result.metadata["arguments"] = params
 
@@ -349,7 +384,7 @@ class ToolExecutor:
             self._bus.publish(
                 EventType.TOOL_CALL_END,
                 {
-                    "tool": tool_call.name,
+                    "tool": tool_name,
                     "success": result.success,
                     "latency": latency,
                     "result": result_text,

@@ -8,10 +8,22 @@ from __future__ import annotations
 
 import importlib.util
 import io
-from typing import List
+from typing import Any, List
 
 from openjarvis.core.registry import TTSRegistry
 from openjarvis.speech.tts import TTSBackend, TTSResult
+
+
+def _english_language_code(voice_id: str) -> str:
+    """Resolve Kokoro's English pipeline from the configured voice prefix."""
+    if voice_id.startswith(("af_", "am_")):
+        return "a"
+    if voice_id.startswith(("bf_", "bm_")):
+        return "b"
+    raise ValueError(
+        "Kokoro voice must use an English voice prefix "
+        f"('af_', 'am_', 'bf_', or 'bm_'): voice_id={voice_id!r}"
+    )
 
 
 @TTSRegistry.register("kokoro")
@@ -23,15 +35,18 @@ class KokoroTTSBackend(TTSBackend):
     def __init__(self, *, model_path: str = "", device: str = "auto") -> None:
         self._model_path = model_path
         self._device = device
-        self._pipeline = None
+        self._pipeline: Any | None = None
+        self._language_code: str | None = None
 
-    def _ensure_pipeline(self) -> None:
-        if self._pipeline is not None:
+    def _ensure_pipeline(self, voice_id: str) -> None:
+        language_code = _english_language_code(voice_id)
+        if self._pipeline is not None and self._language_code == language_code:
             return
         try:
             from kokoro import KPipeline
 
-            self._pipeline = KPipeline(lang_code="a")
+            self._pipeline = KPipeline(lang_code=language_code)
+            self._language_code = language_code
         except ImportError as exc:
             raise RuntimeError(
                 "kokoro package not installed. Install with: pip install kokoro"
@@ -50,7 +65,7 @@ class KokoroTTSBackend(TTSBackend):
         speed: float = 1.0,
         output_format: str = "wav",
     ) -> TTSResult:
-        self._ensure_pipeline()
+        self._ensure_pipeline(voice_id)
         import numpy as np
         import soundfile as sf
 
@@ -76,7 +91,17 @@ class KokoroTTSBackend(TTSBackend):
         )
 
     def available_voices(self) -> List[str]:
-        return ["af_heart", "af_bella", "am_adam", "am_michael"]
+        return [
+            "af_heart",
+            "af_bella",
+            "am_adam",
+            "am_michael",
+            "bf_emma",
+            "bf_isabella",
+            "bm_daniel",
+            "bm_george",
+            "bm_lewis",
+        ]
 
     def health(self) -> bool:
         """Report package availability without downloading models."""

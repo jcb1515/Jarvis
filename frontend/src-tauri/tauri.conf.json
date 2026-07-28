@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Astrono Jarvis",
+  "mainBinaryName": "Astrono Jarvis",
   "version": "1.0.1",
-  "identifier": "com.openjarvis.desktop",
+  "identifier": "com.astrono.jarvis",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -24,13 +25,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob:"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob:; media-src 'self' data: blob:"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -53,7 +54,12 @@
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.digicert.com"
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Astrono Jarvis",
+        "installerHooks": "./windows/hooks.nsh"
+      }
     }
   },
   "plugins": {
@@ -61,12 +67,12 @@
       "active": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFFNzUzMzhEOEY2MjNEMDMKUldRRFBXS1BqVE4xSG8vK0lkUWN4WnZQYVIrbmc4RmpoOGlJWTBLTE15RlIya3JvQisvdUR3a0QK",
       "endpoints": [
-        "https://github.com/open-jarvis/OpenJarvis/releases/download/desktop-latest/latest.json"
+        "https://github.com/jcb1515/Jarvis/releases/latest/download/latest.json"
       ]
     },
     "deep-link": {
       "desktop": {
-        "schemes": ["openjarvis"]
+        "schemes": ["astronojarvis"]
       }
     }
   }

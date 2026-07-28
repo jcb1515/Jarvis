@@ -65,7 +65,7 @@ def synthesize_with_fallback(
             backend = _create_backend(backend_key, config)
             resolved_voice = voice_id
             if not resolved_voice and backend_key == "kokoro":
-                resolved_voice = "am_adam"
+                resolved_voice = config.speech.tts_voice or "bm_george"
             result = backend.synthesize(
                 text,
                 voice_id=resolved_voice,
@@ -114,7 +114,7 @@ def stream_with_fallback(
                 )
                 return backend_key, "mp3", resolved_voice, chunks
 
-            resolved_voice = voice_id or "am_adam"
+            resolved_voice = voice_id or config.speech.tts_voice or "bm_george"
             result = backend.synthesize(
                 text,
                 voice_id=resolved_voice,

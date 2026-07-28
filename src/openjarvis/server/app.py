@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import threading
 import time
 
 from fastapi import FastAPI
@@ -226,10 +227,105 @@ def create_app(
     app.state.speech_backend = speech_backend
     app.state.agent_manager = agent_manager
     app.state.agent_scheduler = agent_scheduler
+    app.state.daily_brief_service = None
+    app.state.obsidian_mcp_client = None
+    app.state.context_memory_service = None
+    app.state.action_tools = []
+    app.state.action_tool_executor = None
+    app.state.mcp_clients = []
     app.state.session_start = time.time()
     # Exposed so WebSocket handlers can authenticate the handshake (the HTTP
     # AuthMiddleware never sees WS upgrade requests). Empty = auth disabled.
     app.state.api_key = api_key
+
+    workspace_config = getattr(config, "google_workspace", None)
+    if workspace_config is not None and workspace_config.enabled:
+        try:
+            from openjarvis.connectors.gcalendar import GCalendarConnector
+            from openjarvis.connectors.gmail import GmailConnector
+            from openjarvis.tools._stubs import ToolExecutor
+            from openjarvis.tools.google_workspace import (
+                build_google_workspace_tools,
+            )
+
+            workspace_tools = build_google_workspace_tools(
+                GmailConnector(),
+                GCalendarConnector(),
+                workspace_config.timezone,
+            )
+            app.state.action_tools = workspace_tools
+            app.state.action_tool_executor = ToolExecutor(
+                workspace_tools,
+                bus,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Google Workspace tool provider initialization failed",
+                extra={"error": str(exc)},
+            )
+
+    mcp_config = getattr(getattr(config, "tools", None), "mcp", None)
+    mcp_servers = getattr(mcp_config, "servers", "")
+    if isinstance(mcp_servers, str) and mcp_servers.strip():
+
+        def _load_external_action_tools() -> None:
+            try:
+                from openjarvis.mcp.loader import load_mcp_tools_from_config
+                from openjarvis.tools._stubs import ToolExecutor
+
+                external_tools, clients = load_mcp_tools_from_config(mcp_config)
+                combined_tools = [
+                    *app.state.action_tools,
+                    *external_tools,
+                ]
+                app.state.mcp_clients = clients
+                app.state.action_tools = combined_tools
+                app.state.action_tool_executor = ToolExecutor(
+                    combined_tools,
+                    bus,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "External action-tool initialization failed",
+                    extra={"error": str(exc)},
+                )
+
+        threading.Thread(
+            target=_load_external_action_tools,
+            name="astrono-action-tools",
+            daemon=True,
+        ).start()
+
+    context_config = getattr(config, "context_memory", None)
+    if context_config is not None and context_config.enabled:
+        try:
+            from openjarvis.assistant.context_memory import ContextMemoryService
+            from openjarvis.assistant.obsidian import build_obsidian_client
+            from openjarvis.tools.approval_store import ApprovalStore
+
+            def _get_obsidian_client():
+                existing = getattr(app.state, "obsidian_mcp_client", None)
+                if existing is not None:
+                    return existing
+                client = build_obsidian_client(
+                    config.tools.mcp,
+                    context_config.mcp_server,
+                )
+                app.state.obsidian_mcp_client = client
+                return client
+
+            context_service = ContextMemoryService.from_config(
+                _get_obsidian_client,
+                ApprovalStore(),
+                context_config,
+            )
+            app.state.context_memory_service = context_service
+            context_service.check_due_async()
+        except Exception as exc:
+            logger.warning(
+                "Context-memory service initialization failed",
+                extra={"error": str(exc)},
+            )
 
     # Wire up trace store if traces are enabled.
     #
@@ -305,6 +401,14 @@ def create_app(
                     svc.stop()
                 except Exception:
                     pass
+
+    @app.on_event("shutdown")
+    async def _shutdown_assistant_mcp_clients() -> None:
+        obsidian_client = getattr(app.state, "obsidian_mcp_client", None)
+        if obsidian_client is not None:
+            obsidian_client.close()
+        for client in getattr(app.state, "mcp_clients", []):
+            client.close()
 
     app.include_router(router)
     app.include_router(dashboard_router)

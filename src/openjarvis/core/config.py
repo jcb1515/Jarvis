@@ -1498,6 +1498,55 @@ class MemoryFilesConfig:
 
 
 @dataclass(slots=True)
+class DailyBriefConfig:
+    """Obsidian-backed Morning Brief source settings."""
+
+    enabled: bool = False
+    mcp_server: str = "obsidian"
+    folder: str = "Morning Brief/Daily Briefs"
+    timezone: str = "America/Toronto"
+    spoken_max_chars: int = 1800
+
+
+@dataclass(slots=True)
+class ContextMemoryConfig:
+    """Durable Obsidian context consolidation settings."""
+
+    enabled: bool = False
+    mcp_server: str = "obsidian"
+    path: str = "Jarvis/context.md"
+    timezone: str = "America/Toronto"
+    consolidation_hour: int = 21
+    max_injected_chars: int = 6000
+
+
+@dataclass(slots=True)
+class BrowserControlConfig:
+    """Deterministic browser navigation and Playwright policy."""
+
+    enabled: bool = False
+    allowed_schemes: str = "http,https"
+    provider: str = "playwright"
+
+
+@dataclass(slots=True)
+class ApplicationAllowlistConfig:
+    """Fixed desktop application launch allowlist."""
+
+    enabled: bool = False
+    applications: str = "chrome,obsidian"
+
+
+@dataclass(slots=True)
+class GoogleWorkspaceConfig:
+    """Local Google Workspace MCP provider settings."""
+
+    enabled: bool = False
+    timezone: str = "America/Toronto"
+    max_tool_turns: int = 5
+
+
+@dataclass(slots=True)
 class SystemPromptConfig:
     """Limits and strategy for system-prompt assembly."""
 
@@ -1619,6 +1668,17 @@ class JarvisConfig:
     optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
     agent_manager: AgentManagerConfig = field(default_factory=AgentManagerConfig)
     memory_files: MemoryFilesConfig = field(default_factory=MemoryFilesConfig)
+    daily_brief: DailyBriefConfig = field(default_factory=DailyBriefConfig)
+    context_memory: ContextMemoryConfig = field(default_factory=ContextMemoryConfig)
+    browser_control: BrowserControlConfig = field(
+        default_factory=BrowserControlConfig
+    )
+    applications: ApplicationAllowlistConfig = field(
+        default_factory=ApplicationAllowlistConfig
+    )
+    google_workspace: GoogleWorkspaceConfig = field(
+        default_factory=GoogleWorkspaceConfig
+    )
     system_prompt: SystemPromptConfig = field(default_factory=SystemPromptConfig)
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
@@ -1883,6 +1943,11 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "digest",
             "proactive",
             "memory_files",
+            "daily_brief",
+            "context_memory",
+            "browser_control",
+            "applications",
+            "google_workspace",
             "system_prompt",
             "compression",
             "skills",
@@ -2194,10 +2259,12 @@ __all__ = [
     "A2AConfig",
     "AgentConfig",
     "AgentManagerConfig",
+    "ApplicationAllowlistConfig",
     "OperatorsConfig",
     "AgentLearningConfig",
     "BlueBubblesChannelConfig",
     "BrowserConfig",
+    "BrowserControlConfig",
     "CapabilitiesConfig",
     "ChannelConfig",
     "ConfigurationError",
@@ -2205,6 +2272,7 @@ __all__ = [
     "DEFAULT_CONFIG_PATH",
     "DiscordChannelConfig",
     "DeepResearchConfig",
+    "DailyBriefConfig",
     "get_cache_dir",
     "get_config_dir",
     "get_config_path",
@@ -2213,6 +2281,7 @@ __all__ = [
     "EngineConfig",
     "FeishuChannelConfig",
     "GoogleChatChannelConfig",
+    "GoogleWorkspaceConfig",
     "GpuInfo",
     "HardwareInfo",
     "IRCChannelConfig",
@@ -2227,6 +2296,7 @@ __all__ = [
     "MatrixChannelConfig",
     "MattermostChannelConfig",
     "MemoryConfig",
+    "ContextMemoryConfig",
     "MetricsConfig",
     "OllamaEngineConfig",
     "OptimizeConfig",

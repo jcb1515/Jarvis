@@ -40,6 +40,9 @@ fallback, and confirmation-gated MCP tools in one desktop-ready interface.
   - speech-reactive outward jets or solar flares.
 - A unified phase label such as `THINKING, 1.2s`, keeping state and elapsed
   time on one synchronized line.
+- Persistent `INSTANT` and `THINKING` controls. Request-level phrases such as
+  "think carefully about this" enable Qwen reasoning for that request only;
+  reasoning streams into a collapsible panel and is never spoken as the answer.
 - Streaming OpenJarvis agent and tool events.
 - Immediate ElevenLabs audio streaming with native playback-state events,
   explicit Web Audio context resume checks, and progress-based stall recovery
@@ -50,6 +53,12 @@ fallback, and confirmation-gated MCP tools in one desktop-ready interface.
 - MCP tool safety classification: read operations can run directly; browser,
   filesystem, note, and other write-like operations require confirmation.
 - A live approval queue with approve and deny actions.
+- Deterministic Chrome navigation for explicit `http://` and `https://`
+  commands, independent from the tool-less conversation agent.
+- Strict daily-brief reads from `Morning Brief/Daily Briefs` through Obsidian
+  MCP, plus approval-gated durable context in `Jarvis/context.md`.
+- Local Google Workspace tools for Gmail and Calendar reads and
+  confirmation-gated writes.
 - Typed-command fallback and a responsive monochrome astronomical console.
 
 The ElevenLabs profile is intentionally an original, JARVIS-inspired delivery.
@@ -62,6 +71,9 @@ It does not clone or claim to reproduce a film actor's voice.
 - Node.js 20+
 - [uv](https://docs.astral.sh/uv/)
 - [Ollama](https://ollama.com/) with the configured `qwen3.5:4b` model
+- Rust's `x86_64-pc-windows-msvc` target, `cargo-xwin`, and LLVM-MinGW UCRT are
+  required only when building the Windows desktop installer. This avoids a
+  machine-wide Visual Studio Build Tools dependency.
 - No system FFmpeg install is required; the speech extra installs a
   project-local FFmpeg binary through `imageio-ffmpeg`.
 
@@ -172,10 +184,59 @@ confirmation.
 
 The Obsidian entry expects Local REST API at
 `https://127.0.0.1:27124/mcp/`. Set its bearer key in `.env` before starting
-JARVIS. Read operations such as vault listing and search run directly; note
+JARVIS. Store the raw key only—do not include the `Bearer ` prefix. Read
+operations such as vault listing and search run directly; note
 creation, edits, deletes, moves, commands, and UI-opening actions require
 confirmation. If you do not use Obsidian, set that server object's `enabled`
 field to `false`.
+
+Daily briefs are read-only. The research workflow remains their sole producer.
+For a date, Astrono Jarvis first checks `YYYY-MM-DD.md`; if that is absent, it
+accepts exactly one `YYYY-MM-DD*.md` themed note. Missing or duplicate notes
+produce an explicit vault error and never fall back to Gmail.
+
+Durable context is consolidated at 9:00 PM Toronto time, with a missed run
+caught up on the next startup. Credentials, temporary instructions, assistant
+guesses, and duplicate facts are excluded. The approval queue receives one
+exact section-patch action; an approved action executes once, a denied action
+never executes, and a failed action remains retryable.
+
+## Google Workspace
+
+Create a Google OAuth Desktop app, enable the Gmail and Google Calendar APIs,
+and put the client ID and secret in `.env`. Then run:
+
+```powershell
+uv run --env-file .env python scripts/oauth_all.py --google
+```
+
+The renewed consent includes `gmail.send` and full Calendar access. Gmail
+search/thread/unread and Calendar today/search/next-meeting are reads. Gmail
+send/archive/trash and Calendar create/update/delete/respond always enter the
+approval queue.
+
+## One-click desktop launcher
+
+The Tauri app is the authoritative launcher. It starts or attaches to Ollama,
+starts or attaches to the backend, waits for health, and presents the voice
+interface without a terminal window. Its NSIS installer creates `Astrono
+Jarvis` shortcuts on the Windows Desktop and Start Menu using the black-hole
+icon.
+
+Build the Windows installer:
+
+```powershell
+rustup target add x86_64-pc-windows-msvc
+cargo install --locked cargo-xwin
+winget install --id MartinStorsjo.LLVM-MinGW.UCRT --exact
+cd frontend
+npm run package:windows
+```
+
+The installer is emitted under
+`frontend/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`.
+The PWA remains available as an optional browser installation, but it cannot
+start stopped local services and is not the primary launcher.
 
 ## Configuration
 
@@ -197,7 +258,8 @@ model = "small"
 language = "en"
 device = "cpu"
 compute_type = "int8"
-tts_backend = "auto"
+tts_backend = "kokoro"
+tts_voice = "bm_george"
 tts_speed = 0.92
 auto_speak = true
 wake_word_enabled = true
@@ -207,7 +269,30 @@ wake_word_vad_threshold = 0.35
 vad_threshold = 0.5
 vad_min_speech_ms = 96
 vad_min_silence_ms = 1000
+
+[daily_brief]
+folder = "Morning Brief/Daily Briefs"
+timezone = "America/Toronto"
+
+[context_memory]
+path = "Jarvis/context.md"
+consolidation_hour = 21
+
+[applications]
+applications = "chrome,obsidian"
+
+[google_workspace]
+timezone = "America/Toronto"
+max_tool_turns = 5
+
+[security]
+profile = "personal"
+mode = "warn"
 ```
+
+Kokoro handles spoken output only. Microphone input continues through local
+openWakeWord, Silero VAD, and Faster-Whisper. Set `tts_backend = "auto"` to
+restore ElevenLabs-first output when that account has available quota.
 
 ## Validation
 

@@ -81,6 +81,39 @@ def _gcal_api_event_patch(
     return resp.json()
 
 
+def _gcal_api_event_insert(
+    token: str,
+    calendar_id: str,
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create one calendar event."""
+
+    resp = httpx.post(
+        f"{_GCAL_API_BASE}/calendars/{calendar_id}/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json=body,
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _gcal_api_event_delete(
+    token: str,
+    calendar_id: str,
+    event_id: str,
+) -> Dict[str, Any]:
+    """Delete one calendar event."""
+
+    resp = httpx.delete(
+        f"{_GCAL_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return {"deleted": True, "event_id": event_id}
+
+
 def _gcal_api_calendars_list(token: str) -> Dict[str, Any]:
     """Call the Calendar ``calendarList.list`` endpoint.
 
@@ -109,6 +142,9 @@ def _gcal_api_events_list(
     *,
     page_token: Optional[str] = None,
     time_min: Optional[str] = None,
+    time_max: Optional[str] = None,
+    query: str = "",
+    max_results: int = 250,
 ) -> Dict[str, Any]:
     """Call the Calendar ``events.list`` endpoint for a single calendar.
 
@@ -133,12 +169,16 @@ def _gcal_api_events_list(
     params: Dict[str, Any] = {
         "singleEvents": "true",
         "orderBy": "startTime",
-        "maxResults": 250,
+        "maxResults": max_results,
     }
     if page_token:
         params["pageToken"] = page_token
     if time_min:
         params["timeMin"] = time_min
+    if time_max:
+        params["timeMax"] = time_max
+    if query:
+        params["q"] = query
 
     resp = httpx.get(
         f"{_GCAL_API_BASE}/calendars/{calendar_id}/events",
@@ -249,8 +289,10 @@ class GCalendarConnector(BaseConnector):
     auth_type = "oauth"
 
     def __init__(self, credentials_path: str = "") -> None:
-        self._credentials_path = resolve_google_credentials(
-            credentials_path or _DEFAULT_CREDENTIALS_PATH
+        self._credentials_path = (
+            credentials_path
+            if credentials_path
+            else resolve_google_credentials(_DEFAULT_CREDENTIALS_PATH)
         )
         self._items_synced: int = 0
         self._items_total: int = 0
@@ -470,6 +512,107 @@ class GCalendarConnector(BaseConnector):
         if not found and user_email:
             updated.append({"email": user_email, "responseStatus": "declined"})
         _gcal_api_event_patch(token, calendar_id, event_id, {"attendees": updated})
+
+    def list_events(
+        self,
+        calendar_id: str,
+        time_min: str,
+        time_max: str,
+        query: str,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded, ordered calendar event list."""
+
+        if not 1 <= max_results <= 250:
+            raise ValueError("Calendar max_results must be between 1 and 250.")
+        result = call_with_refresh(
+            _gcal_api_events_list,
+            self._credentials_path,
+            calendar_id,
+            time_min=time_min or None,
+            time_max=time_max or None,
+            query=query,
+            max_results=max_results,
+        )
+        return list(result.get("items", []))
+
+    def create_event(
+        self,
+        calendar_id: str,
+        title: str,
+        start: str,
+        end: str,
+        timezone_name: str,
+        description: str,
+        location: str,
+    ) -> Dict[str, Any]:
+        """Create one timed calendar event."""
+
+        if not title.strip():
+            raise ValueError("Calendar event title cannot be empty.")
+        body: Dict[str, Any] = {
+            "summary": title,
+            "start": {"dateTime": start, "timeZone": timezone_name},
+            "end": {"dateTime": end, "timeZone": timezone_name},
+        }
+        if description:
+            body["description"] = description
+        if location:
+            body["location"] = location
+        return call_with_refresh(
+            _gcal_api_event_insert,
+            self._credentials_path,
+            calendar_id,
+            body,
+        )
+
+    def update_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        changes: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply an explicit partial update to one calendar event."""
+
+        if not event_id.strip():
+            raise ValueError("Calendar event_id cannot be empty.")
+        if not changes:
+            raise ValueError("Calendar event changes cannot be empty.")
+        return call_with_refresh(
+            _gcal_api_event_patch,
+            self._credentials_path,
+            calendar_id,
+            event_id,
+            changes,
+        )
+
+    def delete_event(self, calendar_id: str, event_id: str) -> Dict[str, Any]:
+        """Delete one calendar event."""
+
+        if not event_id.strip():
+            raise ValueError("Calendar event_id cannot be empty.")
+        return call_with_refresh(
+            _gcal_api_event_delete,
+            self._credentials_path,
+            calendar_id,
+            event_id,
+        )
+
+    def respond_to_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        response: str,
+    ) -> None:
+        """Accept or decline one invitation."""
+
+        if response == "accepted":
+            self.accept_event(event_id, calendar_id)
+            return
+        if response == "declined":
+            self.decline_event(event_id, calendar_id)
+            return
+        raise ValueError("Calendar response must be 'accepted' or 'declined'.")
 
     def sync_status(self) -> SyncStatus:
         """Return sync progress from the most recent :meth:`sync` call."""

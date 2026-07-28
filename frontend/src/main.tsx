@@ -22,12 +22,48 @@ function applyTheme() {
   } catch { /* use system default */ }
 }
 
-applyTheme();
+function isTauriRuntime(): boolean {
+  return '__TAURI_INTERNALS__' in window;
+}
 
-// Fetch the API base URL from the Tauri backend before rendering.
-// This ensures JARVIS_PORT is defined in one place (the Rust backend).
-// In non-Tauri environments this is a no-op.
-initApiBase().finally(() => {
+async function registerBrowserPwa(): Promise<void> {
+  if (isTauriRuntime() || !('serviceWorker' in navigator)) {
+    return;
+  }
+  const { registerSW } = await import('virtual:pwa-register');
+  registerSW({ immediate: true });
+}
+
+async function removeLegacyTauriServiceWorkers(): Promise<boolean> {
+  if (!isTauriRuntime() || !('serviceWorker' in navigator)) {
+    return false;
+  }
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  const results = await Promise.all(
+    registrations.map((registration) => registration.unregister()),
+  );
+  return results.some((removed) => removed);
+}
+
+applyTheme();
+void registerBrowserPwa();
+
+async function startApplication(): Promise<void> {
+  const removedLegacyServiceWorker = await removeLegacyTauriServiceWorkers();
+  if (removedLegacyServiceWorker) {
+    window.location.reload();
+    return;
+  }
+
+  // Fetch the API base URL from the Tauri backend before rendering.
+  // This ensures JARVIS_PORT is defined in one place (the Rust backend).
+  // In non-Tauri environments this is a no-op.
+  try {
+    await initApiBase();
+  } catch (error: unknown) {
+    console.error('Astrono Jarvis could not initialize the desktop API base.', { error });
+  }
+
   // Kick off analytics init in the background — it's never awaited so
   // a slow/failed identity fetch never delays UI render.
   void initAnalytics();
@@ -41,4 +77,6 @@ initApiBase().finally(() => {
       </ErrorBoundary>
     </StrictMode>,
   );
-});
+}
+
+void startApplication();

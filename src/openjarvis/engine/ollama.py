@@ -201,6 +201,7 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
         content = data.get("message", {}).get("content", "")
         result: Dict[str, Any] = {
             "content": content,
+            "reasoning_content": data.get("message", {}).get("thinking", ""),
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "prompt_tokens_evaluated": prompt_tokens_evaluated,
@@ -259,7 +260,7 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
         temperature: float = 0.7,
         max_tokens: int = 1024,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | StreamChunk]:
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages_to_dicts(messages),
@@ -305,7 +306,11 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
                         chunk = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    content = chunk.get("message", {}).get("content", "")
+                    message = chunk.get("message", {}) or {}
+                    reasoning_content = message.get("thinking", "")
+                    content = message.get("content", "")
+                    if reasoning_content:
+                        yield StreamChunk(reasoning_content=reasoning_content)
                     if content:
                         yield content
                     if chunk.get("done", False):
@@ -429,8 +434,11 @@ class OllamaEngine(AsyncHTTPEngineMixin, InferenceEngine):
 
                     message = chunk.get("message", {}) or {}
                     content = message.get("content", "")
+                    reasoning_content = message.get("thinking", "")
                     raw_tool_calls = message.get("tool_calls") or []
 
+                    if reasoning_content:
+                        yield StreamChunk(reasoning_content=reasoning_content)
                     if content:
                         yield StreamChunk(content=content)
 

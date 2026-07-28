@@ -7,6 +7,8 @@ export interface ChatRequest {
   stream: true;
   temperature?: number;
   max_tokens?: number;
+  think?: boolean;
+  tool_mode?: 'direct' | 'auto' | 'tools';
 }
 
 export async function* streamChat(

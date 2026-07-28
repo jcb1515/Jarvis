@@ -65,6 +65,7 @@ GOOGLE_ALL_SCOPES: List[str] = [
     # gmail.modify (a superset of gmail.readonly) so the proactive agent
     # can trash and label-modify (archive) emails after user approval.
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/tasks.readonly",
 ]
 
@@ -228,11 +229,12 @@ def build_google_auth_url(
 
 
 def resolve_google_credentials(connector_path: str) -> str:
-    """Return the best available Google credentials file path.
+    """Resolve a connector's default Google credentials file path.
 
-    Checks the connector-specific file first, then falls back to the
-    shared ``google.json``.  Returns *connector_path* if neither exists
-    (so ``is_connected()`` correctly returns ``False``).
+    Checks the default connector-specific file first, then the shared
+    ``google.json``. Callers preserve explicit user-supplied paths without
+    passing them here so test, portable, and alternate credential stores do
+    not silently redirect into the user's shared account.
     """
     if Path(connector_path).exists():
         return connector_path

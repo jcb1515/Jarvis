@@ -26,8 +26,8 @@ model = "small"
 language = "en"
 device = "cpu"
 compute_type = "int8"
-tts_backend = "auto"
-tts_voice = ""
+tts_backend = "kokoro"
+tts_voice = "bm_george"
 tts_speed = 0.92
 auto_speak = true
 vad_enabled = true
@@ -65,10 +65,43 @@ servers = """
 ]
 """
 
+[daily_brief]
+enabled = true
+mcp_server = "obsidian"
+folder = "Morning Brief/Daily Briefs"
+timezone = "America/Toronto"
+spoken_max_chars = 1800
+
+[context_memory]
+enabled = true
+mcp_server = "obsidian"
+path = "Jarvis/context.md"
+timezone = "America/Toronto"
+consolidation_hour = 21
+max_injected_chars = 6000
+
+[browser_control]
+enabled = true
+allowed_schemes = "http,https"
+provider = "playwright"
+
+[applications]
+enabled = true
+applications = "chrome,obsidian"
+
+[google_workspace]
+enabled = true
+timezone = "America/Toronto"
+max_tool_turns = 5
+
 [server]
 host = "127.0.0.1"
 port = 8000
 agent = "simple"
 
+[analytics]
+enabled = false
+
 [security]
 profile = "personal"
+mode = "warn"

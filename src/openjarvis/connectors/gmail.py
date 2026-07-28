@@ -12,6 +12,7 @@ import email.utils
 import logging
 import re
 from datetime import datetime
+from email.message import EmailMessage
 from html.parser import HTMLParser
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -149,6 +150,32 @@ def _gmail_api_get_message(token: str, msg_id: str) -> Dict[str, Any]:
         f"{_GMAIL_API_BASE}/messages/{msg_id}",
         headers={"Authorization": f"Bearer {token}"},
         params={"format": "full"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _gmail_api_get_thread(token: str, thread_id: str) -> Dict[str, Any]:
+    """Fetch one full Gmail thread."""
+
+    resp = httpx.get(
+        f"{_GMAIL_API_BASE}/threads/{thread_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"format": "full"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _gmail_api_send_message(token: str, raw_message: str) -> Dict[str, Any]:
+    """Send one RFC 2822 message through the Gmail API."""
+
+    resp = httpx.post(
+        f"{_GMAIL_API_BASE}/messages/send",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"raw": raw_message},
         timeout=30.0,
     )
     resp.raise_for_status()
@@ -348,8 +375,10 @@ class GmailConnector(BaseConnector):
     auth_type = "oauth"
 
     def __init__(self, credentials_path: str = "") -> None:
-        self._credentials_path = resolve_google_credentials(
-            credentials_path or _DEFAULT_CREDENTIALS_PATH
+        self._credentials_path = (
+            credentials_path
+            if credentials_path
+            else resolve_google_credentials(_DEFAULT_CREDENTIALS_PATH)
         )
         self._items_synced: int = 0
         self._items_total: int = 0
@@ -571,6 +600,75 @@ class GmailConnector(BaseConnector):
         self._call_with_refresh(
             _gmail_api_modify_message, msg_id, remove_labels=["INBOX"]
         )
+
+    def search_messages(
+        self,
+        query: str,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Search and return full Gmail messages up to a strict limit."""
+
+        if not query.strip():
+            raise ValueError("Gmail search query cannot be empty.")
+        if not 1 <= max_results <= 100:
+            raise ValueError("Gmail max_results must be between 1 and 100.")
+        listing = self._call_with_refresh(
+            _gmail_api_list_messages,
+            query=query,
+        )
+        message_ids = [
+            item.get("id", "")
+            for item in listing.get("messages", [])
+            if item.get("id")
+        ][:max_results]
+        return [
+            self._call_with_refresh(_gmail_api_get_message, message_id)
+            for message_id in message_ids
+        ]
+
+    def get_thread(self, thread_id: str) -> Dict[str, Any]:
+        """Return one full Gmail thread."""
+
+        if not thread_id.strip():
+            raise ValueError("Gmail thread_id cannot be empty.")
+        return self._call_with_refresh(_gmail_api_get_thread, thread_id)
+
+    def list_unread(
+        self,
+        label: str,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Return unread messages from one label."""
+
+        clean_label = label.strip() or "INBOX"
+        return self.search_messages(
+            f"is:unread label:{clean_label}",
+            max_results,
+        )
+
+    def send_message(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+    ) -> Dict[str, Any]:
+        """Send one plain-text email through Gmail."""
+
+        addresses = _normalize_addresses(to)
+        if not addresses:
+            raise ValueError("Gmail recipient must contain a valid email address.")
+        if not subject.strip():
+            raise ValueError("Gmail subject cannot be empty.")
+        if not body.strip():
+            raise ValueError("Gmail body cannot be empty.")
+        message = EmailMessage()
+        message["To"] = ", ".join(addresses)
+        message["Subject"] = subject
+        message.set_content(body)
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode(
+            "ascii"
+        )
+        return self._call_with_refresh(_gmail_api_send_message, raw_message)
 
     def sync_status(self) -> SyncStatus:
         """Return sync progress from the most recent :meth:`sync` call."""
