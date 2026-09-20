@@ -1021,9 +1021,7 @@ class CloudEngine(InferenceEngine):
         last_error: Exception | None = None
         for attempt in range(1, 4):
             try:
-                return self._nvidia_client.chat.completions.create(
-                    **create_kwargs
-                )
+                return self._nvidia_client.chat.completions.create(**create_kwargs)
             except Exception as exc:
                 last_error = exc
                 logger.warning(

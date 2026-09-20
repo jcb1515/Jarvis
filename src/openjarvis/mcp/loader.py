@@ -94,9 +94,7 @@ def load_mcp_tools_from_config(
             token = os.path.expandvars(str(raw_token)) if raw_token else None
             verify_tls = cfg.get("verify_tls", True)
             if not isinstance(verify_tls, bool):
-                raise TypeError(
-                    f"MCP server {name!r} verify_tls must be a boolean"
-                )
+                raise TypeError(f"MCP server {name!r} verify_tls must be a boolean")
             command = cfg.get("command", "")
             args = cfg.get("args", [])
             process_env = {

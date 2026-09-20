@@ -617,9 +617,7 @@ class GmailConnector(BaseConnector):
             query=query,
         )
         message_ids = [
-            item.get("id", "")
-            for item in listing.get("messages", [])
-            if item.get("id")
+            item.get("id", "") for item in listing.get("messages", []) if item.get("id")
         ][:max_results]
         return [
             self._call_with_refresh(_gmail_api_get_message, message_id)
@@ -665,9 +663,7 @@ class GmailConnector(BaseConnector):
         message["To"] = ", ".join(addresses)
         message["Subject"] = subject
         message.set_content(body)
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode(
-            "ascii"
-        )
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         return self._call_with_refresh(_gmail_api_send_message, raw_message)
 
     def sync_status(self) -> SyncStatus:

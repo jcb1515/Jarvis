@@ -1088,9 +1088,7 @@ async def stream_speech_activity(websocket: WebSocket) -> None:
                 await websocket.send_json(
                     {
                         "type": "error",
-                        "detail": (
-                            "Expected non-empty mono 16 kHz signed-int16 PCM"
-                        ),
+                        "detail": ("Expected non-empty mono 16 kHz signed-int16 PCM"),
                     }
                 )
                 continue
@@ -1291,8 +1289,7 @@ async def stream_wake_word(websocket: WebSocket) -> None:
 
             now_ms = int(time.time() * 1000)
             cooldown_elapsed = (
-                now_ms - last_detection_at_ms
-                >= speech_config.wake_word_cooldown_ms
+                now_ms - last_detection_at_ms >= speech_config.wake_word_cooldown_ms
             )
             if prediction.detected and cooldown_elapsed:
                 last_detection_at_ms = now_ms

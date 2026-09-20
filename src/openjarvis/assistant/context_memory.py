@@ -149,9 +149,7 @@ def merge_context(
     sections = _parse_context_sections(existing_content or CONTEXT_TEMPLATE)
     additions = {section: [] for section in CONTEXT_SECTIONS}
     normalized_existing = {
-        fact.casefold().rstrip(".")
-        for values in sections.values()
-        for fact in values
+        fact.casefold().rstrip(".") for values in sections.values() for fact in values
     }
     for fact in facts:
         normalized = fact.text.casefold().rstrip(".")
@@ -216,9 +214,7 @@ class ContextMemoryService:
                 for item in payload.get("pending_facts", [])
             ]
             return ContextState(
-                last_consolidated_date=str(
-                    payload.get("last_consolidated_date", "")
-                ),
+                last_consolidated_date=str(payload.get("last_consolidated_date", "")),
                 pending_facts=facts,
             )
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
@@ -321,16 +317,14 @@ class ContextMemoryService:
             note_exists = False
 
         merged_content, additions = merge_context(existing_content, facts)
-        added_facts = [
-            fact for values in additions.values() for fact in values
-        ]
+        added_facts = [fact for values in additions.values() for fact in values]
         if not added_facts:
             with self._lock:
                 state = self._load_state()
                 state.pending_facts = []
-                state.last_consolidated_date = datetime.now(
-                    self._timezone
-                ).date().isoformat()
+                state.last_consolidated_date = (
+                    datetime.now(self._timezone).date().isoformat()
+                )
                 self._save_state(state)
             return None
 
@@ -340,9 +334,7 @@ class ContextMemoryService:
                 section_additions = additions[section]
                 if not section_additions:
                     continue
-                content = "\n" + "\n".join(
-                    f"- {fact}" for fact in section_additions
-                )
+                content = "\n" + "\n".join(f"- {fact}" for fact in section_additions)
                 operations.append(
                     {
                         "tool": "vault_patch",
@@ -466,9 +458,9 @@ class ContextMemoryService:
         with self._lock:
             state = self._load_state()
             state.pending_facts = []
-            state.last_consolidated_date = datetime.now(
-                self._timezone
-            ).date().isoformat()
+            state.last_consolidated_date = (
+                datetime.now(self._timezone).date().isoformat()
+            )
             self._save_state(state)
         return ToolResult(
             tool_name="obsidian_context_patch",

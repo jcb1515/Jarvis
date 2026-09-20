@@ -32,8 +32,7 @@ class OpenWakeWordDetector:
             )
         if not 0 <= vad_threshold <= 1:
             raise ValueError(
-                "Wake-word VAD threshold must be in [0, 1], "
-                f"received {vad_threshold}"
+                f"Wake-word VAD threshold must be in [0, 1], received {vad_threshold}"
             )
         self._model_name = model_name
         self._threshold = threshold
@@ -52,13 +51,10 @@ class OpenWakeWordDetector:
                 from openwakeword.model import Model
             except ImportError as exc:
                 raise RuntimeError(
-                    "openWakeWord is not installed. Run: "
-                    "uv sync --extra desktop"
+                    "openWakeWord is not installed. Run: uv sync --extra desktop"
                 ) from exc
             try:
-                openwakeword.utils.download_models(
-                    [self._model_name.replace(" ", "_")]
-                )
+                openwakeword.utils.download_models([self._model_name.replace(" ", "_")])
                 self._model = Model(
                     wakeword_models=[self._model_name],
                     vad_threshold=self._vad_threshold,
@@ -83,8 +79,7 @@ class OpenWakeWordDetector:
         samples = np.frombuffer(pcm_audio, dtype=np.int16)
         if samples.size < 400:
             raise ValueError(
-                "Wake-word PCM frame is too short: "
-                f"samples={samples.size}, minimum=400"
+                f"Wake-word PCM frame is too short: samples={samples.size}, minimum=400"
             )
         try:
             predictions = self._ensure_model().predict(samples)

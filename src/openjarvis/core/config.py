@@ -1670,9 +1670,7 @@ class JarvisConfig:
     memory_files: MemoryFilesConfig = field(default_factory=MemoryFilesConfig)
     daily_brief: DailyBriefConfig = field(default_factory=DailyBriefConfig)
     context_memory: ContextMemoryConfig = field(default_factory=ContextMemoryConfig)
-    browser_control: BrowserControlConfig = field(
-        default_factory=BrowserControlConfig
-    )
+    browser_control: BrowserControlConfig = field(default_factory=BrowserControlConfig)
     applications: ApplicationAllowlistConfig = field(
         default_factory=ApplicationAllowlistConfig
     )

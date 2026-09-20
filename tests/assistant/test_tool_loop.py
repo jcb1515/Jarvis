@@ -73,6 +73,12 @@ class _ToolCallingEngine:
 
 def test_action_classifier_preserves_direct_conversation() -> None:
     assert is_action_oriented("Check my next calendar meeting") is True
+    assert is_action_oriented("Add an event to my calendar") is True
+    assert is_action_oriented("Move my calendar meeting to 4 PM") is True
+    assert is_action_oriented("Compose an email to Alex") is True
+    assert is_action_oriented("What's on my calendar today?") is True
+    assert is_action_oriented("Do I have any unread emails?") is True
+    assert is_action_oriented("When is my next meeting?") is True
     assert is_action_oriented("Find me a movie") is True
     assert is_action_oriented("Search YouTube for a trailer") is True
     assert is_action_oriented("Browse Twitch for a live stream") is True

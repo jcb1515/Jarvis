@@ -14,9 +14,7 @@ def test_google_workspace_tool_policy_matches_read_write_boundaries() -> None:
         calendar,
         "America/Toronto",
     )
-    policies = {
-        tool.spec.name: tool.spec.requires_confirmation for tool in tools
-    }
+    policies = {tool.spec.name: tool.spec.requires_confirmation for tool in tools}
 
     assert policies["gmail_search"] is False
     assert policies["gmail_thread"] is False

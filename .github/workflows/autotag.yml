@@ -17,6 +17,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch canonical release tags
+        run: |
+          set -euo pipefail
+          git fetch --force --tags https://github.com/open-jarvis/OpenJarvis.git
+
       - name: Compute dev version
         id: version
         run: |

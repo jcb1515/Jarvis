@@ -12,22 +12,28 @@ from openjarvis.tools._stubs import BaseTool, ToolExecutor
 
 _ACTION_VERBS = (
     "accept",
+    "add",
     "archive",
     "browse",
+    "cancel",
     "check",
     "click",
     "close",
+    "compose",
     "create",
     "decline",
     "delete",
     "discover",
     "download",
+    "edit",
     "fill",
     "find",
     "list",
     "look",
+    "move",
     "read",
     "recommend",
+    "remove",
     "respond",
     "schedule",
     "search",
@@ -37,6 +43,7 @@ _ACTION_VERBS = (
     "trash",
     "type",
     "update",
+    "write",
 )
 _TOOL_NOUNS = (
     "calendar",
@@ -78,6 +85,13 @@ _BROWSER_WRITE_TOOL_KEYWORDS: tuple[tuple[str, frozenset[str]], ...] = (
     ("submit", frozenset({"browser_click", "browser_press_key"})),
     ("type", frozenset({"browser_type"})),
 )
+_IMPLICIT_WORKSPACE_READ_INTENT = re.compile(
+    r"\bwhat(?:'s|\s+is)\s+(?:on|in)\s+my\s+(?:calendar|inbox)\b|"
+    r"\bdo\s+i\s+have\b.*\b(?:email|event|meeting|message)s?\b|"
+    r"\bwhen\s+is\s+my\s+next\s+(?:event|meeting)\b|"
+    r"\b(?:any|my)\s+unread\s+(?:email|message)s?\b",
+    re.IGNORECASE,
+)
 
 
 class ToolLoopError(RuntimeError):
@@ -99,14 +113,15 @@ def is_action_oriented(command: str) -> bool:
 
     lowered = command.casefold()
     has_verb = any(
-        re.search(rf"\b{re.escape(verb)}\b", lowered)
-        for verb in _ACTION_VERBS
+        re.search(rf"\b{re.escape(verb)}\b", lowered) for verb in _ACTION_VERBS
     )
     has_noun = any(
-        re.search(rf"\b{re.escape(noun)}s?\b", lowered)
-        for noun in _TOOL_NOUNS
+        re.search(rf"\b{re.escape(noun)}s?\b", lowered) for noun in _TOOL_NOUNS
     )
-    return has_verb and has_noun
+    has_implicit_read_intent = (
+        _IMPLICIT_WORKSPACE_READ_INTENT.search(command) is not None
+    )
+    return has_noun and (has_verb or has_implicit_read_intent)
 
 
 def select_action_tools(
@@ -125,9 +140,7 @@ def select_action_tools(
         )
     if re.search(r"\b(?:calendar|event|meeting)s?\b", lowered):
         selected_names.update(
-            tool.spec.name
-            for tool in tools
-            if tool.spec.name.startswith("calendar_")
+            tool.spec.name for tool in tools if tool.spec.name.startswith("calendar_")
         )
     if re.search(r"\b(?:note|obsidian)s?\b", lowered):
         selected_servers.add("obsidian")
@@ -148,8 +161,7 @@ def select_action_tools(
         tool
         for tool in tools
         if tool.spec.name in selected_names
-        or str(tool.spec.metadata.get("mcp_server", "")).casefold()
-        in selected_servers
+        or str(tool.spec.metadata.get("mcp_server", "")).casefold() in selected_servers
     ]
 
 
@@ -170,9 +182,7 @@ def _parse_tool_calls(raw_calls: Any) -> list[ToolCall]:
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments)
         if not isinstance(arguments, str):
-            raise ToolLoopError(
-                f"The model returned malformed arguments for '{name}'."
-            )
+            raise ToolLoopError(f"The model returned malformed arguments for '{name}'.")
         parsed.append(
             ToolCall(
                 id=str(raw_call.get("id", f"tool-{index + 1}")),

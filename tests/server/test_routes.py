@@ -328,6 +328,31 @@ class TestChatCompletions:
         data = resp.json()
         assert data["choices"][0]["message"]["content"] == "Hello from agent"
 
+    def test_agent_mode_injects_identity_and_capability_prompt(self):
+        engine = _make_engine()
+        agent = _make_agent()
+        client = TestClient(
+            create_app(engine, "test-model", agent=agent, config=_identity_config())
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "What can you do?"}],
+            },
+        )
+
+        assert resp.status_code == 200
+        context = agent.run.call_args.kwargs["context"]
+        system_messages = [
+            message
+            for message in context.conversation.messages
+            if message.role.value == "system"
+        ]
+        assert len(system_messages) == 1
+        assert "OpenJarvis" in system_messages[0].content
+
     def test_with_tools_bypasses_agent(self):
         """Regression for #414.
 

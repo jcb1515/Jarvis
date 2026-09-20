@@ -139,8 +139,8 @@ class ToolExecutor:
             key = execution_key(tool_name, server_name)
             register_approval_handler(
                 key,
-                lambda params, name=tool_name, bound_tool=tool: (
-                    self._dispatch_tool(name, bound_tool, dict(params))
+                lambda params, name=tool_name, bound_tool=tool: self._dispatch_tool(
+                    name, bound_tool, dict(params)
                 ),
             )
 
@@ -263,9 +263,7 @@ class ToolExecutor:
                     None,
                 )
                 if pending is None:
-                    server_name = str(
-                        tool.spec.metadata.get("mcp_server", "external")
-                    )
+                    server_name = str(tool.spec.metadata.get("mcp_server", "external"))
                     pending = approval_store.queue_action(
                         action_type=tool_call.name,
                         description=(

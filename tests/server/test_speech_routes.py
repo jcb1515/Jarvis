@@ -160,9 +160,7 @@ def test_wake_stream_detects_phrase_and_records_transitions():
     )
     app.include_router(speech_router)
 
-    with patch(
-        "openjarvis.speech.wake_word.OpenWakeWordDetector"
-    ) as detector_class:
+    with patch("openjarvis.speech.wake_word.OpenWakeWordDetector") as detector_class:
         detector = detector_class.return_value
         detector.predict.return_value = WakeWordPrediction(
             detected=True,
@@ -192,9 +190,7 @@ def test_wake_stream_detects_phrase_and_records_transitions():
             assert hearing["type"] == "state_transition"
             assert hearing["state"] == "HEARING"
 
-            socket.send_json(
-                {"type": "state_transition", "state": "THINKING"}
-            )
+            socket.send_json({"type": "state_transition", "state": "THINKING"})
             thinking = socket.receive_json()
             assert thinking["type"] == "state_transition"
             assert thinking["state"] == "THINKING"

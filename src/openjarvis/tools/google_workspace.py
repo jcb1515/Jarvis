@@ -196,9 +196,7 @@ def build_google_workspace_tools(
         return [_gmail_message_summary(message) for message in messages]
 
     def gmail_thread(params: Mapping[str, Any]) -> Any:
-        return _gmail_thread_summary(
-            gmail.get_thread(str(params["thread_id"]))
-        )
+        return _gmail_thread_summary(gmail.get_thread(str(params["thread_id"])))
 
     def gmail_unread(params: Mapping[str, Any]) -> Any:
         messages = gmail.list_unread(
@@ -450,8 +448,7 @@ def build_google_workspace_tools(
         ),
     ]
     return [
-        GoogleWorkspaceTool(tool_spec, handler)
-        for tool_spec, handler in definitions
+        GoogleWorkspaceTool(tool_spec, handler) for tool_spec, handler in definitions
     ]
 
 
@@ -462,9 +459,7 @@ def build_google_workspace_mcp_server(
 ) -> MCPServer:
     """Expose Google Workspace tools through the local MCP protocol."""
 
-    return MCPServer(
-        build_google_workspace_tools(gmail, calendar, timezone_name)
-    )
+    return MCPServer(build_google_workspace_tools(gmail, calendar, timezone_name))
 
 
 __all__ = [

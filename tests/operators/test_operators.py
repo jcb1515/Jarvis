@@ -584,6 +584,7 @@ class TestOperativeAgent:
 
     def test_run_tool_loop(self):
         from openjarvis.agents.operative import OperativeAgent
+        from openjarvis.core.types import ToolResult
         from openjarvis.tools._stubs import BaseTool
 
         # Mock tool
@@ -595,7 +596,10 @@ class TestOperativeAgent:
         tool.spec.timeout_seconds = 30
         tool.spec.required_capabilities = []
         tool.spec.taint_labels = []
-        tool.run = MagicMock(return_value="Thought result")
+        tool.execute.return_value = ToolResult(
+            tool_name="think",
+            content="Thought result",
+        )
 
         engine = FakeEngine(
             [
@@ -650,6 +654,7 @@ class TestOperativeAgent:
 
     def test_max_turns_exceeded(self):
         from openjarvis.agents.operative import OperativeAgent
+        from openjarvis.core.types import ToolResult
 
         # Engine always returns tool calls, never a final answer
         responses = [
@@ -675,7 +680,10 @@ class TestOperativeAgent:
         tool.spec.timeout_seconds = 30
         tool.spec.required_capabilities = []
         tool.spec.taint_labels = []
-        tool.run = MagicMock(return_value="thought")
+        tool.execute.return_value = ToolResult(
+            tool_name="think",
+            content="thought",
+        )
 
         agent = OperativeAgent(
             engine,

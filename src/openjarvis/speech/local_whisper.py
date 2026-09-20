@@ -67,8 +67,7 @@ class LocalWhisperBackend(SpeechBackend):
                 return self._model
             if whisper is None:
                 self._last_error = (
-                    "OpenAI Whisper is not installed. "
-                    "Run: uv sync --extra speech"
+                    "OpenAI Whisper is not installed. Run: uv sync --extra speech"
                 )
                 raise ImportError(self._last_error)
 

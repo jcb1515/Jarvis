@@ -342,9 +342,8 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                     model,
                     request_body.stream,
                 )
-            should_use_tools = (
-                request_body.tool_mode == "tools"
-                or is_action_oriented(query_text_for_complexity)
+            should_use_tools = request_body.tool_mode == "tools" or is_action_oriented(
+                query_text_for_complexity
             )
             if should_use_tools:
                 if config is None:
@@ -774,18 +773,16 @@ def _handle_agent(
     """
     from openjarvis.agents._stubs import AgentContext
 
-    # Build context from prior messages
+    # Build context from prior messages. Ground the agent path with the same
+    # identity/capability prompt used by direct and streaming requests. The
+    # approved Obsidian context is appended to that single system message, so
+    # local-stack facts cannot be misread as evidence that external tools are
+    # unavailable.
     ctx = AgentContext()
-    if app_config is not None:
-        approved_context = _approved_context_prompt(app_config)
-        if approved_context:
-            ctx.conversation.add(
-                Message(role=Role.SYSTEM, content=approved_context),
-            )
-    if len(req.messages) > 1:
-        prior = _to_messages(req.messages[:-1])
-        for m in prior:
-            ctx.conversation.add(m)
+    prior = _to_messages(req.messages[:-1])
+    grounded_prior = _ensure_identity_prompt(prior, app_config)
+    for message in grounded_prior:
+        ctx.conversation.add(message)
 
     # Last message is the input
     input_text = req.messages[-1].content if req.messages else ""

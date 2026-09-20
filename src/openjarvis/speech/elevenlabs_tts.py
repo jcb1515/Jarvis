@@ -51,8 +51,7 @@ class ElevenLabsTTSBackend(TTSBackend):
         """Rank account voices for an original British AI-assistant delivery."""
         raw_labels = voice.get("labels", {})
         labels = {
-            str(key).lower(): str(value).lower()
-            for key, value in raw_labels.items()
+            str(key).lower(): str(value).lower() for key, value in raw_labels.items()
         }
         searchable = " ".join(
             [
@@ -171,10 +170,7 @@ class ElevenLabsTTSBackend(TTSBackend):
 
         client = httpx.Client(timeout=self._timeout_seconds)
         resolved_voice = voice_id or self._find_jarvis_voice(client)
-        url = (
-            "https://api.elevenlabs.io/v1/text-to-speech/"
-            f"{resolved_voice}/stream"
-        )
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice}/stream"
         request = client.build_request(
             "POST",
             url,
@@ -228,9 +224,7 @@ class ElevenLabsTTSBackend(TTSBackend):
         if response is None or response.status_code >= 400:
             client.close()
             if last_error is None:
-                raise RuntimeError(
-                    "ElevenLabs TTS failed without an error response"
-                )
+                raise RuntimeError("ElevenLabs TTS failed without an error response")
             raise last_error
 
         def iter_audio() -> Iterator[bytes]:

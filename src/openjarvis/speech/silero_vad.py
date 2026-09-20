@@ -54,26 +54,19 @@ class SileroStreamingVAD:
             )
         if min_silence_ms <= 0:
             raise ValueError(
-                "VAD minimum silence must be positive: "
-                f"min_silence_ms={min_silence_ms}"
+                f"VAD minimum silence must be positive: min_silence_ms={min_silence_ms}"
             )
         if min_speech_ms <= 0:
             raise ValueError(
-                "VAD minimum speech must be positive: "
-                f"min_speech_ms={min_speech_ms}"
+                f"VAD minimum speech must be positive: min_speech_ms={min_speech_ms}"
             )
         self._threshold = threshold
         self._release_threshold = max(0.01, threshold - 0.15)
-        self._min_silence_samples = round(
-            min_silence_ms * SILERO_SAMPLE_RATE / 1000
-        )
+        self._min_silence_samples = round(min_silence_ms * SILERO_SAMPLE_RATE / 1000)
         self._min_speech_windows = max(
             1,
             math.ceil(
-                min_speech_ms
-                * SILERO_SAMPLE_RATE
-                / 1000
-                / SILERO_WINDOW_SAMPLES
+                min_speech_ms * SILERO_SAMPLE_RATE / 1000 / SILERO_WINDOW_SAMPLES
             ),
         )
         self._model: Any = None
@@ -105,9 +98,7 @@ class SileroStreamingVAD:
         self._last_rms_dbfs = -120.0
 
     def _activity(self) -> StreamingSpeechActivity:
-        trailing_silence_ms = round(
-            self._silence_samples * 1000 / SILERO_SAMPLE_RATE
-        )
+        trailing_silence_ms = round(self._silence_samples * 1000 / SILERO_SAMPLE_RATE)
         return StreamingSpeechActivity(
             probability=self._last_probability,
             rms_dbfs=self._last_rms_dbfs,
@@ -152,18 +143,13 @@ class SileroStreamingVAD:
                 model(torch.from_numpy(waveform), SILERO_SAMPLE_RATE).item()
             )
             rms = float(np.sqrt(np.mean(np.square(waveform))))
-            self._last_rms_dbfs = (
-                20 * math.log10(max(rms, 1e-6)) if rms > 0 else -120.0
-            )
+            self._last_rms_dbfs = 20 * math.log10(max(rms, 1e-6)) if rms > 0 else -120.0
             self._processed_samples += SILERO_WINDOW_SAMPLES
 
             if not self._speech_observed:
                 if self._last_probability >= self._threshold:
                     self._speech_candidate_windows += 1
-                    if (
-                        self._speech_candidate_windows
-                        >= self._min_speech_windows
-                    ):
+                    if self._speech_candidate_windows >= self._min_speech_windows:
                         self._speech_observed = True
                         self._speech_active = True
                         self._silence_samples = 0
@@ -247,13 +233,10 @@ class SileroVADDetector:
             max(0.0, float(segment["end"]) - float(segment["start"]))
             for segment in timestamps
         )
-        last_speech_end = (
-            float(timestamps[-1]["end"]) if timestamps else 0.0
-        )
+        last_speech_end = float(timestamps[-1]["end"]) if timestamps else 0.0
         trailing_silence = max(0.0, duration_seconds - last_speech_end)
         return SpeechActivity(
-            active=bool(timestamps)
-            and trailing_silence < self._min_silence_ms / 1000,
+            active=bool(timestamps) and trailing_silence < self._min_silence_ms / 1000,
             speech_seconds=speech_seconds,
             trailing_silence_seconds=trailing_silence,
         )

@@ -47,17 +47,9 @@ class _FakeObsidianClient:
         assert arguments is not None
         self.calls.append((name, arguments))
         if name == "vault_list":
-            return {
-                "content": [
-                    {"type": "text", "text": "\n".join(self.files)}
-                ]
-            }
+            return {"content": [{"type": "text", "text": "\n".join(self.files)}]}
         path = str(arguments["path"])
-        return {
-            "content": [
-                {"type": "text", "text": self.notes[path]}
-            ]
-        }
+        return {"content": [{"type": "text", "text": self.notes[path]}]}
 
 
 def test_daily_brief_prefers_exact_dated_note() -> None:

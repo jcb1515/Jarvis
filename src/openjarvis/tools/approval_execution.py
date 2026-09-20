@@ -38,9 +38,7 @@ def execute_approved_payload(payload: Mapping[str, Any]) -> ToolResult:
     key = payload.get("execution_key")
     arguments = payload.get("arguments")
     if not isinstance(key, str) or not key:
-        raise ApprovalExecutionError(
-            "Approved action is missing its execution key."
-        )
+        raise ApprovalExecutionError("Approved action is missing its execution key.")
     if not isinstance(arguments, dict):
         raise ApprovalExecutionError(
             "Approved action arguments are missing or malformed."

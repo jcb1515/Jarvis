@@ -116,15 +116,15 @@ _DOMAIN_WITH_OPTIONAL_PATH = re.compile(
     r"[a-z]{2,63}(?::\d{1,5})?(?:[/?#]\S*)?$",
     re.IGNORECASE,
 )
-_CHROME_RELATIVE_PATHS: tuple[tuple[str, str], ...] = (
-    ("PROGRAMFILES", r"Google\Chrome\Application\chrome.exe"),
-    ("PROGRAMFILES(X86)", r"Google\Chrome\Application\chrome.exe"),
-    ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"),
+_CHROME_RELATIVE_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("PROGRAMFILES", ("Google", "Chrome", "Application", "chrome.exe")),
+    ("PROGRAMFILES(X86)", ("Google", "Chrome", "Application", "chrome.exe")),
+    ("LOCALAPPDATA", ("Google", "Chrome", "Application", "chrome.exe")),
 )
-_OBSIDIAN_RELATIVE_PATHS: tuple[tuple[str, str], ...] = (
-    ("LOCALAPPDATA", r"Programs\Obsidian\Obsidian.exe"),
-    ("LOCALAPPDATA", r"Obsidian\Obsidian.exe"),
-    ("PROGRAMFILES", r"Obsidian\Obsidian.exe"),
+_OBSIDIAN_RELATIVE_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("LOCALAPPDATA", ("Programs", "Obsidian", "Obsidian.exe")),
+    ("LOCALAPPDATA", ("Obsidian", "Obsidian.exe")),
+    ("PROGRAMFILES", ("Obsidian", "Obsidian.exe")),
 )
 _WEB_ALIASES: Mapping[str, tuple[str, str]] = {
     "gmail": ("https://mail.google.com/", "Gmail"),
@@ -233,9 +233,7 @@ def _named_website_action(command: str) -> ActionRequest | None:
     match = _NAMED_WEBSITE_COMMAND.fullmatch(command)
     if match is None:
         return None
-    website_name, has_website_marker = _normalize_named_website(
-        match.group("target")
-    )
+    website_name, has_website_marker = _normalize_named_website(match.group("target"))
     if not website_name:
         return None
     alias = _WEB_ALIASES.get(website_name)
@@ -256,9 +254,7 @@ def _named_website_action(command: str) -> ActionRequest | None:
     )
     if not has_website_marker and not is_safe_short_name:
         return None
-    display_name = " ".join(
-        word.capitalize() for word in website_name.split()
-    )
+    display_name = " ".join(word.capitalize() for word in website_name.split())
     search_query = quote_plus(f"{website_name} official website")
     return ActionRequest(
         kind=ActionKind.OPEN_URL,
@@ -436,9 +432,7 @@ def resolve_action(command: str) -> ActionRequest | None:
     url_match = _URL_COMMAND.fullmatch(command)
     if url_match is not None:
         raw_target = url_match.group("target")
-        alias = _WEB_ALIASES.get(
-            _strip_wrapping_punctuation(raw_target).casefold()
-        )
+        alias = _WEB_ALIASES.get(_strip_wrapping_punctuation(raw_target).casefold())
         if alias is not None:
             alias_url, alias_label = alias
             return ActionRequest(
@@ -472,17 +466,17 @@ def resolve_action(command: str) -> ActionRequest | None:
 
 
 def _resolve_executable(
-    candidates: Sequence[tuple[str, str]],
+    candidates: Sequence[tuple[str, tuple[str, ...]]],
     environment: Mapping[str, str],
 ) -> Path:
     """Return the first existing executable from fixed installation locations."""
 
     checked_paths: list[str] = []
-    for environment_name, relative_path in candidates:
+    for environment_name, relative_path_parts in candidates:
         base_path = environment.get(environment_name, "")
         if not base_path:
             continue
-        candidate = Path(base_path) / relative_path
+        candidate = Path(base_path).joinpath(*relative_path_parts)
         checked_paths.append(str(candidate))
         if candidate.is_file():
             return candidate
@@ -500,9 +494,7 @@ def _launch_process(executable: Path, arguments: Sequence[str]) -> None:
             close_fds=True,
         )
     except OSError as exc:
-        raise ActionError(
-            f"Could not launch '{executable.name}': {exc}"
-        ) from exc
+        raise ActionError(f"Could not launch '{executable.name}': {exc}") from exc
 
 
 def execute_action(
@@ -526,9 +518,7 @@ def execute_action(
         )
 
     if action.kind == ActionKind.DAILY_BRIEF:
-        raise ActionError(
-            "Daily briefs require the configured Obsidian MCP service."
-        )
+        raise ActionError("Daily briefs require the configured Obsidian MCP service.")
 
     application = action.arguments["application"]
     if application not in {
@@ -542,9 +532,7 @@ def execute_action(
     elif application == "obsidian":
         executable = _resolve_executable(_OBSIDIAN_RELATIVE_PATHS, active_environment)
     else:
-        raise ActionError(
-            f"Application '{application}' is not in the allowlist."
-        )
+        raise ActionError(f"Application '{application}' is not in the allowlist.")
     _launch_process(executable, [])
     return ActionResult(
         action=action,

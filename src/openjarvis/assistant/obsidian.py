@@ -85,18 +85,14 @@ def build_obsidian_client(mcp_config: Any, server_name: str) -> MCPClient:
         )
     server = matches[0]
     if server.get("enabled", True) is False:
-        raise ObsidianServiceError(
-            f"The MCP server '{server_name}' is disabled."
-        )
+        raise ObsidianServiceError(f"The MCP server '{server_name}' is disabled.")
 
     raw_url = str(server.get("url", ""))
     raw_token = str(server.get("token", ""))
     url = os.path.expandvars(raw_url)
     token = os.path.expandvars(raw_token)
     if not url:
-        raise ObsidianServiceError(
-            f"The MCP server '{server_name}' has no URL."
-        )
+        raise ObsidianServiceError(f"The MCP server '{server_name}' has no URL.")
     if "$" in url or "%" in url:
         raise ObsidianServiceError(
             f"The MCP server '{server_name}' URL has unresolved environment variables."
@@ -149,9 +145,7 @@ def _extract_text_blocks(result: Mapping[str, Any]) -> list[str]:
         and isinstance(block.get("text"), str)
     ]
     if not texts:
-        raise ObsidianServiceError(
-            "Obsidian MCP response contained no readable text."
-        )
+        raise ObsidianServiceError("Obsidian MCP response contained no readable text.")
     return texts
 
 
@@ -315,9 +309,7 @@ class DailyBriefService:
         read_result = self._call("vault_read", {"path": selected_path})
         content = extract_vault_note_content(read_result).strip()
         if not content:
-            raise ObsidianServiceError(
-                f"The daily brief '{selected_path}' is empty."
-            )
+            raise ObsidianServiceError(f"The daily brief '{selected_path}' is empty.")
         return DailyBriefNote(
             date=brief_date,
             source_path=selected_path,
@@ -431,10 +423,7 @@ def _summarize_banner_brief(
             f"The daily brief '{note.source_path}' contains no readable prose."
         )
 
-    selected = {
-        heading: [lines[0]]
-        for heading, lines in readable_sections
-    }
+    selected = {heading: [lines[0]] for heading, lines in readable_sections}
     context_keywords = _context_keywords(approved_context)
     candidates: list[tuple[int, int, str, str]] = []
     for section_index, (heading, lines) in enumerate(readable_sections):
