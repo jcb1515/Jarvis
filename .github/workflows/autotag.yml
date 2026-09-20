@@ -20,7 +20,14 @@ jobs:
       - name: Fetch canonical release tags
         run: |
           set -euo pipefail
-          git fetch --force --tags https://github.com/open-jarvis/OpenJarvis.git
+          UPSTREAM_URL="https://github.com/open-jarvis/OpenJarvis.git"
+          git ls-remote --tags --refs "$UPSTREAM_URL" 'refs/tags/v*' \
+            | awk '{sub("refs/tags/", "", $2); print $2}' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | while read -r tag; do
+                git fetch --force --no-tags "$UPSTREAM_URL" \
+                  "refs/tags/${tag}:refs/tags/${tag}"
+              done
 
       - name: Compute dev version
         id: version
