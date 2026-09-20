@@ -85,19 +85,15 @@ jobs:
 
       # Tag pushes made with the default GITHUB_TOKEN do NOT trigger other
       # workflows (recursion prevention). workflow_dispatch is the documented
-      # exception, so we explicitly dispatch the downstream CD workflows here.
+      # exception, so explicitly dispatch the desktop build here.
       # See: https://docs.github.com/en/actions/security-guides/automatic-token-authentication
-      - name: Dispatch downstream workflows
+      - name: Dispatch desktop workflow
         if: steps.tag.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          echo "Dispatching pypi-publish.yml @ ${TAG}"
-          gh workflow run pypi-publish.yml \
-            --ref "${TAG}" \
-            -f tag="${TAG}"
           echo "Dispatching desktop.yml @ ${TAG}"
           gh workflow run desktop.yml \
             --ref "${TAG}" \
