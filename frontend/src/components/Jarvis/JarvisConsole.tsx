@@ -1,30 +1,12 @@
-import {
-  ArrowClockwise,
-  Brain,
-  Check,
-  Cpu,
-  Ear,
-  GearSix,
-  Microphone,
-  PaperPlaneRight,
-  ShieldCheck,
-  Waveform,
-  X,
-} from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approveAction, denyAction, fetchPendingApprovals } from '../../lib/api';
 import type { PendingApproval } from '../../lib/api';
 import { streamChat } from '../../lib/sse';
 import { useAppStore } from '../../lib/store';
 import type { ChatMessage } from '../../types';
-import {
-  CosmicVisualizer,
-  type CosmicMode,
-  type JarvisStage,
-} from './CosmicVisualizer';
-import { MicWaveform } from './MicWaveform';
+import type { CosmicMode, JarvisStage } from './CosmicVisualizer';
+import { initialSceneMode, JarvisSurface } from './JarvisSurface';
 import { useVoicePipeline } from './useVoicePipeline';
-import './jarvis-console.css';
 
 const DEFAULT_JARVIS_MODEL = 'qwen3.5:4b';
 const CONVERSATION_WINDOW_MS = 12_000;
@@ -153,7 +135,7 @@ export function JarvisConsole() {
   );
   const [stageStartedAtMs, setStageStartedAtMs] = useState(Date.now());
   const [timerNowMs, setTimerNowMs] = useState(Date.now());
-  const [cosmicMode, setCosmicMode] = useState<CosmicMode>('BLACK_HOLE');
+  const [cosmicMode, setCosmicMode] = useState<CosmicMode>(initialSceneMode);
   const [command, setCommand] = useState('');
   const [partialTranscript, setPartialTranscript] = useState('');
   const [error, setError] = useState('');
@@ -826,293 +808,35 @@ export function JarvisConsole() {
   };
 
   return (
-    <main
-      className={`jarvis-console ${wakeFlash ? 'is-wake-detected' : ''}`}
-    >
-      <CosmicVisualizer
-        getFrequencyData={voice.getOutputData}
-        mode={cosmicMode}
-        stage={stage}
-      />
-      <div className="jarvis-console__vignette" aria-hidden="true" />
-
-      <header className="jarvis-header">
-        <div className="jarvis-brand">
-          <img src="/astrono-black-hole.png" alt="" />
-          <div>
-            <span>ASTRONO JARVIS</span>
-            <small>ASTRONOMICAL INTELLIGENCE INTERFACE</small>
-          </div>
-        </div>
-        <div className="jarvis-header__status">
-          <span>
-            <i /> SYSTEM ONLINE
-          </span>
-          <span
-            className={`jarvis-wake-status jarvis-wake-status--${voice.wakeStatus.toLowerCase()}`}
-          >
-            WAKE {voice.wakeStatus}
-          </span>
-          <span>
-            {new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
-          <a href="/settings" aria-label="Open settings">
-            <GearSix size={20} />
-          </a>
-        </div>
-      </header>
-
-      <section className="jarvis-workspace">
-        <aside className="jarvis-rail jarvis-rail--left">
-          <div className="jarvis-section-label">LIVE TRANSCRIPT</div>
-          <div className="jarvis-transcript">
-            {transcript.length === 0 && (
-              <p className="jarvis-empty">Awaiting your first command.</p>
-            )}
-            {transcript.map((line, index) => (
-              <article key={`${line.speaker}-${index}`}>
-                <span>{line.speaker}</span>
-                <p>{line.text}</p>
-              </article>
-            ))}
-            {partialTranscript && (
-              <article className="jarvis-transcript__partial">
-                <span>LIVE</span>
-                <p>{partialTranscript}</p>
-              </article>
-            )}
-          </div>
-          <div className="jarvis-agent-steps">
-            <div className="jarvis-section-label">AGENT PHASE</div>
-            <div className={stage === 'HEARING' ? 'is-active' : ''}>
-              <i>
-                <Ear size={19} />
-              </i>
-              <span>HEARING</span>
-            </div>
-            <div
-              className={
-                stage === 'THINKING' || stage === 'RESPONDING'
-                  ? 'is-active'
-                  : ''
-              }
-            >
-              <i>
-                <Brain size={19} />
-              </i>
-              <span>THINKING</span>
-            </div>
-            <div className={stage === 'SPEAKING' ? 'is-active' : ''}>
-              <i>
-                <Waveform size={19} />
-              </i>
-              <span>SPEAKING</span>
-            </div>
-          </div>
-        </aside>
-
-        <section className="jarvis-core">
-          <div className="jarvis-visualizer-toolbar">
-            <div className="jarvis-toolbar-group">
-              <span>CELESTIAL ENGINE</span>
-              <div
-                aria-label="JARVIS visualizer mode"
-                className="jarvis-mode-toggle"
-                role="group"
-              >
-                <button
-                  aria-pressed={cosmicMode === 'BLACK_HOLE'}
-                  onClick={() => setCosmicMode('BLACK_HOLE')}
-                  type="button"
-                >
-                  BLACK HOLE
-                </button>
-                <button
-                  aria-pressed={cosmicMode === 'SOLAR_SYSTEM'}
-                  onClick={() => setCosmicMode('SOLAR_SYSTEM')}
-                  type="button"
-                >
-                  SOLAR SYSTEM
-                </button>
-              </div>
-            </div>
-            <div className="jarvis-toolbar-group">
-              <span>COGNITION</span>
-              <div
-                aria-label="JARVIS thinking mode"
-                className="jarvis-mode-toggle"
-                role="group"
-              >
-                <button
-                  aria-pressed={!thinkingMode}
-                  onClick={() => setThinkingMode(false)}
-                  type="button"
-                >
-                  INSTANT
-                </button>
-                <button
-                  aria-pressed={thinkingMode}
-                  onClick={() => setThinkingMode(true)}
-                  type="button"
-                >
-                  THINKING
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div
-            aria-live="polite"
-            className={`jarvis-state jarvis-state--${stage.toLowerCase()}`}
-            role="status"
-          >
-            <span>{formatPhaseLabel(stage, visibleElapsedMs)}</span>
-            <p>{statusDetail()}</p>
-          </div>
-
-          {reasoningTrace && (
-            <details className="jarvis-reasoning" open>
-              <summary>
-                <Brain size={14} /> THINKING TRACE
-              </summary>
-              <p>{reasoningTrace}</p>
-            </details>
-          )}
-
-          {wakeFlash && (
-            <div className="jarvis-wake-cue" role="status">
-              WAKE PHRASE CONFIRMED
-              <small>confidence {Math.round(voice.wakeScore * 100)}%</small>
-            </div>
-          )}
-        </section>
-
-        <aside className="jarvis-rail jarvis-rail--right">
-          <div className="jarvis-section-label">PENDING ACTION</div>
-          <div className="jarvis-approval">
-            <div>
-              <ShieldCheck size={18} />
-              <span>APPROVAL QUEUE</span>
-              <b>{approvals.length}</b>
-            </div>
-            {approvals.slice(0, 1).map((approval) => (
-              <article key={approval.id}>
-                <small>
-                  {approval.action_type.replace(/_/g, ' ')}
-                  {approval.status === 'approved' ? ' · retryable' : ''}
-                </small>
-                <p>{approval.description}</p>
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => void handleApproval(approval, false)}
-                  >
-                    <X size={14} /> DENY
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleApproval(approval, true)}
-                  >
-                    <Check size={14} />
-                    {approval.status === 'approved' ? 'RETRY' : 'APPROVE'}
-                  </button>
-                </div>
-              </article>
-            ))}
-            {approvals.length === 0 && (
-              <p className="jarvis-empty">No pending writes.</p>
-            )}
-          </div>
-        </aside>
-      </section>
-
-      <footer className="jarvis-command">
-        <div className="jarvis-mic-deck">
-          <div className="jarvis-mic-readout">
-            <span>
-              MIC INPUT
-              <small>
-                {voice.isListening
-                  ? 'CAPTURING'
-                  : voice.wakeStatus === 'ARMED'
-                    ? 'WAKE MONITOR'
-                    : voice.wakeStatus}
-              </small>
-            </span>
-            <MicWaveform
-              active={voice.isListening || voice.wakeStatus === 'ARMED'}
-              getFrequencyData={voice.getMicData}
-            />
-          </div>
-          <button
-            className="jarvis-ptt"
-            onPointerCancel={() => void finishListening()}
-            onPointerDown={() =>
-              void beginListening({
-                automatic: false,
-                conversation: false,
-                prompt: 'Manual microphone fallback active…',
-              })
-            }
-            onPointerUp={() => void finishListening()}
-            type="button"
-          >
-            <Microphone size={18} weight="fill" />
-            {voice.isListening && !listeningAutomatically
-              ? 'RELEASE TO SEND'
-              : 'MANUAL FALLBACK'}
-            <kbd>SPACE</kbd>
-          </button>
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void sendTypedCommand();
-          }}
-        >
-          <span className="jarvis-command__prompt">›</span>
-          <input
-            aria-label="Type a command"
-            onChange={(event) => setCommand(event.target.value)}
-            placeholder="Type a command when silence is preferable…"
-            ref={inputRef}
-            value={command}
-          />
-          <button type="submit" aria-label="Send command">
-            <PaperPlaneRight size={19} />
-          </button>
-        </form>
-        <div className="jarvis-command__status">
-          <span>
-            <i /> OPENWAKEWORD LOCAL
-          </span>
-          <span>WHISPER LOCAL</span>
-          <span>
-            SILERO P {voice.vadProbability.toFixed(3)} ·{' '}
-            {voice.vadRmsDbfs.toFixed(1)} DB · {voice.vadSilenceMs} MS{' '}
-            {voice.vadActive ? 'SPEECH' : 'QUIET'}
-          </span>
-          <span>
-            <ArrowClockwise size={13} />{' '}
-            {voice.voiceBackend === 'elevenlabs'
-              ? 'ELEVENLABS'
-              : voice.voiceBackend === 'kokoro'
-                ? 'KOKORO LOCAL'
-                : 'KOKORO READY'}
-          </span>
-          <span>
-            <Cpu size={13} /> {activeModel}
-          </span>
-          <span>
-            {error || voice.wakeError
-              ? `FAULT: ${error || voice.wakeError}`
-              : 'ALL SYSTEMS NOMINAL'}
-          </span>
-        </div>
-      </footer>
-    </main>
+    <JarvisSurface
+      activeModel={activeModel}
+      approvals={approvals}
+      command={command}
+      cosmicMode={cosmicMode}
+      error={error}
+      inputRef={inputRef}
+      isDemo={isDemo}
+      listeningAutomatically={listeningAutomatically}
+      partialTranscript={partialTranscript}
+      phaseLabel={formatPhaseLabel(stage, visibleElapsedMs)}
+      reasoningTrace={reasoningTrace}
+      stage={stage}
+      statusDetail={statusDetail()}
+      thinkingMode={thinkingMode}
+      transcript={transcript}
+      voice={voice}
+      wakeFlash={wakeFlash}
+      onApproval={(approval, approved) => void handleApproval(approval, approved)}
+      onCommandChange={setCommand}
+      onCosmicModeChange={setCosmicMode}
+      onMicrophoneDown={() => void beginListening({
+        automatic: false,
+        conversation: false,
+        prompt: 'Manual microphone fallback active…',
+      })}
+      onMicrophoneUp={() => void finishListening()}
+      onSubmit={() => void sendTypedCommand()}
+      onThinkingModeChange={setThinkingMode}
+    />
   );
 }
