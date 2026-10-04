@@ -215,6 +215,28 @@ search/thread/unread and Calendar today/search/next-meeting are reads. Gmail
 send/archive/trash and Calendar create/update/delete/respond always enter the
 approval queue.
 
+## Physical status device
+
+The read-only physical-device bridge streams JARVIS runtime state from
+`/v1/devices/state`. Set a long random `ASTRONO_DEVICE_TOKEN` in `.env`; an
+ESP32 must present it as an `Authorization: Bearer` header during the WebSocket
+handshake. Tokens in query strings are rejected so credentials do not appear
+in URLs or access logs.
+
+Each connection receives an immediate versioned `jarvis_state` snapshot,
+subsequent state changes with monotonic sequence numbers, and a heartbeat every
+15 seconds. `RESPONDING` is normalized to `THINKING`, preserving one continuous
+physical thinking animation. The bridge is output-only and cannot invoke chat,
+tools, or approvals.
+
+The default server remains loopback-only. Before connecting real hardware, bind
+the server to the private LAN and configure the separate
+`OPENJARVIS_API_KEY`; non-loopback startup is intentionally refused without
+that main API credential.
+
+The ESP32-S3 firmware, Wokwi wiring, pinned build profile, and simulation
+commands live in [`hardware/astrono-tower`](hardware/astrono-tower/README.md).
+
 ## One-click desktop launcher
 
 The Tauri app is the authoritative launcher. It starts or attaches to Ollama,

@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "author": "Astrono Jarvis",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": 20,
+      "left": 20,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-ili9341",
+      "id": "display",
+      "top": 5,
+      "left": 390,
+      "rotate": 90,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led-ring",
+      "id": "ring",
+      "top": 25,
+      "left": 815,
+      "attrs": {
+        "pixels": "24"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "ringDataResistor",
+      "top": 205,
+      "left": 745,
+      "rotate": 90,
+      "attrs": {
+        "value": "470"
+      }
+    },
+    {
+      "type": "wokwi-slide-switch",
+      "id": "modeSwitch",
+      "top": 430,
+      "left": 45,
+      "attrs": {
+        "value": "",
+        "bounce": "0"
+      }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "microphoneLevel",
+      "top": 405,
+      "left": 220,
+      "attrs": {
+        "value": "0"
+      }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "speaker",
+      "top": 430,
+      "left": 390,
+      "attrs": {
+        "volume": "0.15"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "errorButton",
+      "top": 420,
+      "left": 515,
+      "attrs": {
+        "color": "red",
+        "label": "ERROR"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "touchButton",
+      "top": 420,
+      "left": 665,
+      "attrs": {
+        "color": "blue",
+        "label": "TOUCH"
+      }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "modeLabel",
+      "top": 525,
+      "left": 20,
+      "attrs": {
+        "text": "MODE: DEMO  <->  LIVE"
+      }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "microphoneLabel",
+      "top": 525,
+      "left": 210,
+      "attrs": {
+        "text": "SIMULATED MIC LEVEL"
+      }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "physicalOnlyLabel",
+      "top": 585,
+      "left": 20,
+      "attrs": {
+        "text": "PHYSICAL-ONLY POWER STAGE: 5V SUPPLY + FUSE + 1000uF CAPACITOR + 74AHCT125 LEVEL SHIFTER"
+      }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "touchLabel",
+      "top": 625,
+      "left": 20,
+      "attrs": {
+        "text": "PHYSICAL TOUCH: XPT2046 ON GPIO 6/7/13. BLUE BUTTON IS THE WOKWI TOUCH SURROGATE."
+      }
+    }
+  ],
+  "connections": [
+    ["esp:5", "ringDataResistor:1", "green", []],
+    ["ringDataResistor:2", "ring:DIN", "green", []],
+    ["esp:5V", "ring:VCC", "red", []],
+    ["esp:GND.1", "ring:GND", "black", []],
+    ["esp:5V", "display:VCC", "red", []],
+    ["esp:GND.1", "display:GND", "black", []],
+    ["esp:10", "display:CS", "purple", []],
+    ["esp:9", "display:D/C", "blue", []],
+    ["esp:11", "display:MOSI", "green", []],
+    ["esp:12", "display:SCK", "orange", []],
+    ["esp:3V3", "modeSwitch:1", "red", []],
+    ["esp:2", "modeSwitch:2", "purple", []],
+    ["esp:GND.1", "modeSwitch:3", "black", []],
+    ["esp:3V3", "microphoneLevel:VCC", "red", []],
+    ["esp:1", "microphoneLevel:SIG", "green", []],
+    ["esp:GND.1", "microphoneLevel:GND", "black", []],
+    ["esp:14", "speaker:1", "blue", []],
+    ["esp:GND.1", "speaker:2", "black", []],
+    ["esp:4", "errorButton:1.l", "red", []],
+    ["esp:GND.1", "errorButton:2.l", "black", []],
+    ["esp:8", "touchButton:1.l", "blue", []],
+    ["esp:GND.1", "touchButton:2.l", "black", []],
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []]
+  ],
+  "serialMonitor": {
+    "display": "terminal",
+    "newline": "lf"
+  },
+  "dependencies": {}
+}

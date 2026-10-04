@@ -9,6 +9,7 @@ import secrets
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -111,3 +112,22 @@ def websocket_authorized(websocket, expected_key: str) -> bool:  # noqa: ANN001
     if not token:
         return False
     return secrets.compare_digest(token, expected_key)
+
+
+def websocket_bearer_authorized(
+    websocket: WebSocket,
+    expected_token: str,
+) -> bool:
+    """Authenticate a programmatic WebSocket using a bearer header only.
+
+    Unlike browser WebSockets, ESP32 clients can set headers during the
+    handshake. Requiring the header keeps device credentials out of URLs and
+    access logs. An empty configured token always fails closed.
+    """
+    if not expected_token:
+        return False
+    auth = websocket.headers.get("authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return secrets.compare_digest(token, expected_token)

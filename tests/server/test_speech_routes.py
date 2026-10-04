@@ -145,10 +145,15 @@ def test_wake_stream_detects_phrase_and_records_transitions():
     from fastapi.testclient import TestClient
 
     from openjarvis.server.api_routes import speech_router
+    from openjarvis.server.device_state import JarvisRuntimeState, RuntimeStateHub
     from openjarvis.speech.wake_word import WakeWordPrediction
 
     app = FastAPI()
     app.state.api_key = ""
+    app.state.runtime_state_hub = RuntimeStateHub(
+        JarvisRuntimeState.READY,
+        1_700_000_000_000,
+    )
     app.state.config = SimpleNamespace(
         speech=SimpleNamespace(
             wake_word_enabled=True,
@@ -194,6 +199,10 @@ def test_wake_stream_detects_phrase_and_records_transitions():
             thinking = socket.receive_json()
             assert thinking["type"] == "state_transition"
             assert thinking["state"] == "THINKING"
+
+            physical_snapshot = app.state.runtime_state_hub.snapshot()
+            assert physical_snapshot.state is JarvisRuntimeState.THINKING
+            assert physical_snapshot.sequence == 3
 
     detector.prepare.assert_called_once_with()
     detector.predict.assert_called_once_with(bytes(1280 * 2))

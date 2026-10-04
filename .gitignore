@@ -120,6 +120,10 @@ src/openjarvis/channels/whatsapp_baileys_bridge/node_modules/
 *.webm
 *.mp3
 
+# Physical-device credentials and generated firmware
+hardware/**/arduino_secrets.h
+hardware/**/build/
+
 # Dogfood reports (regenerated locally; not for VCS)
 dogfood_report*.md
 

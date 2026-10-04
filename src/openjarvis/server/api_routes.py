@@ -20,6 +20,13 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from openjarvis.server.device_state import (
+    RuntimeStateHub,
+    create_device_state_router,
+    current_time_ms,
+    publish_runtime_state,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---- Request/Response models ----
@@ -1158,6 +1165,14 @@ async def stream_wake_word(websocket: WebSocket) -> None:
         nonlocal current_state, state_started_at_ms
         current_state = state
         state_started_at_ms = int(time.time() * 1000)
+        runtime_state_hub = getattr(
+            websocket.app.state,
+            "runtime_state_hub",
+            None,
+        )
+        if runtime_state_hub is not None:
+            hub: RuntimeStateHub = runtime_state_hub
+            publish_runtime_state(hub, current_state, state_started_at_ms)
         await websocket.send_json(
             {
                 "type": "state_transition",
@@ -1532,6 +1547,7 @@ def include_all_routes(app) -> None:
     app.include_router(budget_router)
     app.include_router(metrics_router)
     app.include_router(websocket_router)
+    app.include_router(create_device_state_router(current_time_ms))
     app.include_router(learning_router)
     app.include_router(speech_router)
     app.include_router(feedback_router)

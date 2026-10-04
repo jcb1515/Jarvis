@@ -1463,6 +1463,15 @@ class SpeechConfig:
 
 
 @dataclass(slots=True)
+class PhysicalDeviceConfig:
+    """Read-only physical status-device bridge settings."""
+
+    enabled: bool = False
+    token_env: str = "ASTRONO_DEVICE_TOKEN"
+    heartbeat_interval_s: float = 15.0
+
+
+@dataclass(slots=True)
 class OptimizeConfig:
     """Configuration optimization settings."""
 
@@ -1665,6 +1674,7 @@ class JarvisConfig:
     a2a: A2AConfig = field(default_factory=A2AConfig)
     operators: OperatorsConfig = field(default_factory=OperatorsConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
+    physical_device: PhysicalDeviceConfig = field(default_factory=PhysicalDeviceConfig)
     optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
     agent_manager: AgentManagerConfig = field(default_factory=AgentManagerConfig)
     memory_files: MemoryFilesConfig = field(default_factory=MemoryFilesConfig)
@@ -1936,6 +1946,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "a2a",
             "operators",
             "speech",
+            "physical_device",
             "optimize",
             "agent_manager",
             "digest",
@@ -2298,6 +2309,7 @@ __all__ = [
     "MetricsConfig",
     "OllamaEngineConfig",
     "OptimizeConfig",
+    "PhysicalDeviceConfig",
     "RoutingLearningConfig",
     "SGLangEngineConfig",
     "SandboxConfig",

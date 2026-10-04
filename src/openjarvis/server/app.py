@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import os
 import pathlib
 import threading
 import time
@@ -16,6 +18,11 @@ from openjarvis.server.api_routes import include_all_routes
 from openjarvis.server.comparison import comparison_router
 from openjarvis.server.connectors_router import create_connectors_router
 from openjarvis.server.dashboard import dashboard_router
+from openjarvis.server.device_state import (
+    JarvisRuntimeState,
+    RuntimeStateHub,
+    current_time_ms,
+)
 from openjarvis.server.digest_routes import create_digest_router
 from openjarvis.server.research_router import router as research_router
 from openjarvis.server.routes import router
@@ -243,6 +250,52 @@ def create_app(
     # Exposed so WebSocket handlers can authenticate the handshake (the HTTP
     # AuthMiddleware never sees WS upgrade requests). Empty = auth disabled.
     app.state.api_key = api_key
+
+    physical_device_config = (
+        getattr(config, "physical_device", None) if config is not None else None
+    )
+    if physical_device_config is None:
+        physical_device_enabled = False
+        physical_device_token = ""
+        physical_device_heartbeat_interval_s = 15.0
+    else:
+        physical_device_enabled = physical_device_config.enabled
+        physical_device_heartbeat_interval_s = (
+            physical_device_config.heartbeat_interval_s
+        )
+        if (
+            not math.isfinite(physical_device_heartbeat_interval_s)
+            or physical_device_heartbeat_interval_s <= 0
+        ):
+            raise ValueError(
+                "Physical device heartbeat interval must be a positive finite "
+                "number: "
+                f"heartbeat_interval_s={physical_device_heartbeat_interval_s!r}"
+            )
+        if not physical_device_config.token_env:
+            raise ValueError(
+                "Physical device token environment variable cannot be empty: "
+                f"token_env={physical_device_config.token_env!r}"
+            )
+        physical_device_token = os.environ.get(
+            physical_device_config.token_env,
+            "",
+        )
+        if physical_device_enabled and not physical_device_token:
+            logger.warning(
+                "Physical device bridge is enabled without a device token",
+                extra={"token_env": physical_device_config.token_env},
+            )
+
+    app.state.physical_device_enabled = physical_device_enabled
+    app.state.physical_device_token = physical_device_token
+    app.state.physical_device_heartbeat_interval_s = (
+        physical_device_heartbeat_interval_s
+    )
+    app.state.runtime_state_hub = RuntimeStateHub(
+        JarvisRuntimeState.READY,
+        current_time_ms(),
+    )
 
     speech_config = getattr(config, "speech", None)
     if speech_config is not None and speech_config.tts_backend == "kokoro":

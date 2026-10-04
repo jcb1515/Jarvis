@@ -162,6 +162,11 @@ enabled = true
 timezone = "America/Toronto"
 max_tool_turns = 5
 
+[physical_device]
+enabled = true
+token_env = "ASTRONO_DEVICE_TOKEN"
+heartbeat_interval_s = 15.0
+
 [server]
 host = "127.0.0.1"
 port = 8000
